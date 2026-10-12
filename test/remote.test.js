@@ -2,9 +2,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { extractEnvelope } from '../src/fleet.js';
 
 const KEY = 'aaaa1111-2222-3333-4444-555566667777';
@@ -13,12 +14,34 @@ function seedHome() {
   const home = mkdtempSync(join(tmpdir(), 'unsnooze-remote-e2e-'));
   const stateDir = join(home, '.unsnooze');
   mkdirSync(stateDir, { recursive: true });
+  // Keep a real spawned resumer attached to this fixture's remote subprocess
+  // until it exits. Previously execFileSync returned while an unref'd child
+  // was still creating state files, racing rmSync with ENOTEMPTY. Keeping the
+  // ChildProcess reference also makes its lifecycle explicit in the regression
+  // below; no sleep/retry or production daemon suppression is needed.
+  writeFileSync(join(home, 'resumer-lifecycle.mjs'), `
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { writeFileSync } from 'node:fs';
+const spawn = childProcess.spawn;
+childProcess.spawn = (file, args, options) => {
+  const child = spawn(file, args, options);
+  if (args?.includes('_resumer')) {
+    child.unref = () => child;
+    child.once('exit', (code, signal) => writeFileSync(
+      ${JSON.stringify(join(home, 'resumer-exited.json'))},
+      JSON.stringify({ pid: child.pid, code, signal }), { mode: 0o600 }));
+  }
+  return child;
+};
+syncBuiltinESMExports();
+`);
   writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
     version: 1, sessions: {
       [KEY]: {
-        key: KEY, sessionId: KEY, agent: 'claude', cwd: '/tmp/p', status: 'stopped',
-        resetAt: Date.now() + 3_600_000, resetSource: 'absolute', mux: 'tmux',
-        pane: '%1', muxSession: 'unsnooze', attempts: 0, limitType: '5h', detectedAt: Date.now(),
+        key: KEY, sessionId: KEY, agent: 'claude', cwd: home, status: 'stopped',
+        resetAt: Date.now() + 3_600_000, resetSource: 'absolute', mux: 'headless',
+        pane: null, muxSession: null, attempts: 0, limitType: '5h', detectedAt: Date.now(),
       },
     },
   }));
@@ -26,9 +49,17 @@ function seedHome() {
 }
 
 function runRemote(stateDir, args, extraEnv = {}) {
-  const env = { ...process.env, UNSNOOZE_STATE_DIR: stateDir, NO_COLOR: '1', ...extraEnv };
+  const home = dirname(stateDir);
+  const env = { ...process.env, HOME: home, USERPROFILE: home, UNSNOOZE_STATE_DIR: stateDir,
+    UNSNOOZE_CLAUDE_DIR: join(home, '.claude'), UNSNOOZE_CODEX_DIR: join(home, '.codex'),
+    UNSNOOZE_MULTIPLEXER: 'headless', UNSNOOZE_UPDATE_CHECK: '0', UNSNOOZE_NOTIFICATIONS: 'off',
+    // This protocol test starts the real resumer, but never a real agent. It
+    // reaches its attempt cap and exits normally after recording the request.
+    UNSNOOZE_MAX_RESUME_ATTEMPTS: '0', UNSNOOZE_POLL_INTERVAL_MS: '10',
+    NO_COLOR: '1', ...extraEnv };
   try {
-    const out = execFileSync(process.execPath, ['bin/unsnooze.js', '_remote', ...args], { env, encoding: 'utf-8' });
+    const out = execFileSync(process.execPath, ['--import', pathToFileURL(join(home, 'resumer-lifecycle.mjs')).href,
+      'bin/unsnooze.js', '_remote', ...args], { env, encoding: 'utf-8', timeout: 20_000 });
     return { code: 0, out };
   } catch (e) {
     return { code: e.status, out: String(e.stdout ?? '') };
@@ -73,6 +104,21 @@ test('_remote resume marks the session (resetAt≈now, manual) and reports match
   assert.ok(st.sessions[KEY].resetAt <= Date.now());
   assert.equal(st.sessions[KEY].manual, true);
   rmSync(home, { recursive: true, force: true });
+});
+
+test('_remote resume fixture waits for its real resumer to exit before removing state', () => {
+  const { home, stateDir } = seedHome();
+  try {
+    assert.equal(runRemote(stateDir, ['resume', KEY]).code, 0);
+    const child = JSON.parse(readFileSync(join(home, 'resumer-exited.json'), 'utf8'));
+    assert.ok(child.pid > 0);
+    assert.equal(child.code, 0);
+    assert.equal(child.signal, null, 'the fixture waits for normal completion');
+    assert.equal(existsSync(join(stateDir, 'resumer.lock')), false);
+    assert.equal(JSON.parse(readFileSync(join(stateDir, 'state.json'), 'utf8')).resumerPid, null);
+    assert.match(readFileSync(join(stateDir, 'unsnooze.log'), 'utf8'), /no pending sessions — resumer exiting/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+  assert.equal(existsSync(home), false);
 });
 
 test('_remote: forced-command mode parses SSH_ORIGINAL_COMMAND, rejects junk', () => {
