@@ -49,17 +49,43 @@ function sanitizeAccount(account, now, maxAgeMs) {
     }
     windows.push({ id: safeText(w.id), label: safeText(w.label),
       ...(safeText(w.group) ? { group: safeText(w.group) } : {}),
-      usedPercent: w.usedPercent, resetAt: w.resetAt });
+      usedPercent: w.usedPercent, resetAt: w.resetAt,
+      ...(w.fetchedAt !== undefined ? { fetchedAt: timestamp(w.fetchedAt) } : {}) });
   }
   const stale = account.stale === true || malformed || !windows.length
     || !['ok', 'quota_exhausted'].includes(status) || fetchedAt === null
     || fetchedAt > now || now - fetchedAt >= maxAgeMs
-    || windows.some(w => w.resetAt !== null && w.resetAt <= now);
+    || windows.some(w => (w.resetAt !== null && w.resetAt <= now)
+      || (w.fetchedAt !== undefined && (w.fetchedAt === null || w.fetchedAt > now || now - w.fetchedAt >= maxAgeMs)));
   const code = CODES.has(account.code) ? account.code : undefined;
   return { id: safeText(account.id), name: safeText(account.name) || safeText(account.id),
     enabled: account.enabled !== false, status: malformed ? 'unknown' : status,
     source: SOURCES.has(account.source) ? account.source : 'unavailable', fetchedAt, checkedAt,
     stale, windows, ...(code ? { code, message: usageFailureMessage(code) } : {}) };
+}
+
+function quotaWindowKey(window) {
+  // Claude's usage endpoint and response headers use different field names
+  // for the same quota. Merge by identity, never by percentage or reset time.
+  const aliases = { five_hour: '5h', seven_day: '7d', seven_day_opus: '7d-opus', seven_day_sonnet: '7d-sonnet' };
+  return aliases[window.id] ?? window.id;
+}
+
+function mergeHeaderObservation(usage, previous, now) {
+  if (!previous?.windows?.length || !['claude-headers', 'claude-probe', 'codex-headers'].includes(usage.source)) return usage;
+  const windows = usage.windows.map(w => ({ ...w, fetchedAt: usage.fetchedAt }));
+  const observed = new Set(windows.map(quotaWindowKey));
+  for (const old of previous.windows) {
+    if (!observed.has(quotaWindowKey(old))) {
+      windows.push({ ...old, fetchedAt: old.fetchedAt ?? previous.fetchedAt });
+    }
+  }
+  const times = windows.map(w => w.fetchedAt);
+  const fetchedAt = times.every(t => timestamp(t) !== null) ? Math.min(...times) : null;
+  const stale = fetchedAt === null || fetchedAt > now || now - fetchedAt >= USAGE_CACHE_TTL_MS
+    || windows.some(w => w.resetAt !== null && w.resetAt <= now);
+  return { ...usage, windows, fetchedAt, stale,
+    status: windows.some(w => w.usedPercent >= 100) ? 'quota_exhausted' : usage.status };
 }
 
 function sanitizeSnapshot(data, now, maxAgeMs) {
@@ -125,11 +151,14 @@ async function collectSnapshot({ stateDir, refresh, fetchFn, now, timeoutMs, all
         && previous && !previous.stale && ['claude-headers', 'claude-probe'].includes(previous.source)) {
         return { ...previous, ...metadata, checkedAt: now };
       }
+      if (sameReference && ['ok', 'quota_exhausted'].includes(usage.status)) {
+        usage = mergeHeaderObservation(usage, previous, now);
+      }
       const good = usage.status === 'ok' || usage.status === 'quota_exhausted';
       const keepPrevious = !good && !usage.windows.length && sameReference && previous?.windows.length;
       return { ...metadata, ...usage,
         fetchedAt: keepPrevious ? previous.fetchedAt : usage.fetchedAt,
-        checkedAt: now, stale: !good,
+        checkedAt: now, stale: !good || usage.stale === true,
         windows: keepPrevious ? previous.windows : usage.windows };
     })) };
   }));
@@ -193,8 +222,10 @@ export async function recordUsageHeaders(provider, accountId, headers, {
     const section = snapshot.providers[provider] ||= { accounts: [] };
     const index = section.accounts.findIndex(a => a.id === accountId);
     if (index >= 0 && section.accounts[index].checkedAt > now) return section.accounts[index];
+    const observation = raw.referenceKeys?.[provider]?.[account.id] === referenceKey(account)
+      ? mergeHeaderObservation(usage, section.accounts[index], now) : usage;
     const entry = { id: account.id, name: account.name, enabled: account.enabled,
-      ...usage, checkedAt: now, stale: false };
+      ...observation, checkedAt: now, stale: observation.stale === true };
     if (index >= 0) section.accounts[index] = entry;
     else section.accounts.push(entry);
     const referenceKeys = {};

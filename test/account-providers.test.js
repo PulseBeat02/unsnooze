@@ -120,6 +120,7 @@ test('Claude probe is strictly opt-in, costs one output token, and reads only qu
     if (url === USAGE_ENDPOINTS.claudeUsage) return response({}, 403);
     assert.equal(url, USAGE_ENDPOINTS.claudeProbe);
     assert.equal(JSON.parse(init.body).max_tokens, 1);
+    assert.equal(JSON.parse(init.body).system, "You are Claude Code, Anthropic's official CLI for Claude.");
     return response({ message: 'ignored-secret' }, 200, {
       'anthropic-ratelimit-unified-5h-utilization': '0.425',
       'anthropic-ratelimit-unified-5h-reset': String(RESET / 1000),

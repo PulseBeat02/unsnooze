@@ -223,6 +223,43 @@ test('a slower refresh does not replace newer routing headers or persist a false
   assert.equal(cache.stale, false);
 });
 
+test('partial response headers cannot erase another exhausted window or refresh its timestamp', async () => {
+  const { stateDir } = setup();
+  await fetchUsageSnapshot({ stateDir, now: NOW, fetchFn: async () => new Response(JSON.stringify({
+    five_hour: { utilization: 20, resets_at: RESET }, seven_day: { utilization: 100, resets_at: RESET + 1000 },
+  })) });
+  const partial = new Headers({ 'anthropic-ratelimit-unified-5h-utilization': '0.3',
+    'anthropic-ratelimit-unified-5h-reset': String(RESET / 1000) });
+  const written = await recordUsageHeaders('claude', 'alpha', partial, { stateDir, now: NOW + 10_000 });
+  assert.equal(written.windows.length, 2);
+  assert.equal(written.status, 'quota_exhausted');
+  assert.equal(written.fetchedAt, NOW);
+  assert.equal(written.windows.find(w => w.label === 'weekly').usedPercent, 100);
+  const aged = await recordUsageHeaders('claude', 'alpha', partial, { stateDir, now: NOW + 61_000 });
+  assert.equal(aged.stale, true);
+  assert.equal(aged.fetchedAt, NOW);
+  assert.equal(aged.windows.find(w => w.label === 'weekly').fetchedAt, NOW);
+  // A complete usage response is authoritative when the plan drops a window.
+  const changedPlan = await fetchUsageSnapshot({ stateDir, now: NOW + 62_000, refresh: true,
+    fetchFn: async () => response(31) });
+  assert.equal(get(changedPlan).windows.length, 1);
+  assert.equal(get(changedPlan).status, 'ok');
+});
+
+test('a partial explicit Claude probe cannot clear an existing exhausted weekly quota', async () => {
+  const { stateDir } = setup();
+  await fetchUsageSnapshot({ stateDir, now: NOW, fetchFn: async () => new Response(JSON.stringify({
+    five_hour: { utilization: 20, resets_at: RESET }, seven_day: { utilization: 100, resets_at: RESET + 1000 },
+  })) });
+  const result = await fetchUsageSnapshot({ stateDir, now: NOW + 1000, refresh: true, allowProbe: true,
+    fetchFn: async url => url.endsWith('/usage') ? new Response('{}', { status: 403 })
+      : new Response('{}', { headers: { 'anthropic-ratelimit-unified-5h-utilization': '0.3',
+        'anthropic-ratelimit-unified-5h-reset': String(RESET / 1000) } }) });
+  assert.equal(get(result).status, 'quota_exhausted');
+  assert.equal(get(result).windows.length, 2);
+  assert.equal(get(result).fetchedAt, NOW);
+});
+
 test('managed account text, JSON, exit codes, and Ink tab display exact USED, reset, and staleness', async () => {
   const { stateDir } = setup();
   const snapshot = await fetchUsageSnapshot({ stateDir, now: NOW, fetchFn: async () => response(42.75) });

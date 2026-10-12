@@ -315,7 +315,9 @@ export async function fetchAccountUsage(provider, credential, {
         source = 'claude-probe';
         return await request(urls.claudeProbe, {
           method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
-          body: JSON.stringify({ model: probeModel, max_tokens: 1, messages: [{ role: 'user', content: '.' }] }),
+          body: JSON.stringify({ model: probeModel, max_tokens: 1,
+            system: "You are Claude Code, Anthropic's official CLI for Claude.",
+            messages: [{ role: 'user', content: '.' }] }),
         }, options, async response => {
           // Ignore the generated message entirely; only exact quota headers matter.
           try {
