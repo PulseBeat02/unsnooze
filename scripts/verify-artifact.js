@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { changelogSection } from './release-notes.mjs';
 
 const output = resolve(process.argv[2]);
 mkdirSync(output, { recursive: true, mode: 0o700 });
@@ -31,6 +32,8 @@ for (const entry of manifest.files) {
 const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
 assert.equal(run(process.execPath, [join(packageDir, 'bin/unsnooze.js'), '--version']).trim(), pkg.version);
 assert.match(readFileSync(join(packageDir, 'LICENSE'), 'utf8'), /MIT License/);
+assert.ok(changelogSection(readFileSync(join(packageDir, 'CHANGELOG.md'), 'utf8'), pkg.version),
+  'the installed artifact needs release notes for its exact version');
 for (const helper of ['unsnooze-ensure', 'unsnooze-update', 'unsnooze-shell.bash']) {
   run('bash', ['-n', join(packageDir, 'bin', helper)]);
 }

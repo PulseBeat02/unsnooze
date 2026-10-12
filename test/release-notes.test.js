@@ -53,3 +53,14 @@ test('the version being shipped has a CHANGELOG section of its own', () => {
   assert.ok(notes, `CHANGELOG.md has no "## ${version}" section`);
   assert.ok(notes.length > 100, 'the notes say something');
 });
+
+test('package, lockfile and newest changelog entry describe the same shipped release', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const lock = JSON.parse(readFileSync(new URL('../package-lock.json', import.meta.url), 'utf8'));
+  const changelog = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
+  assert.equal(lock.version, pkg.version);
+  assert.equal(lock.packages[''].version, pkg.version);
+  assert.equal(/^## (\S+)/m.exec(changelog)?.[1], pkg.version,
+    'a version bump must include the new release notes, not an older section');
+  assert.ok(pkg.files.includes('CHANGELOG.md'), 'release notes must also reach installed artifacts');
+});

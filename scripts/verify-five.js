@@ -24,7 +24,7 @@ const testFiles = (dir => {
   return visit(dir);
 })('test');
 const record = line => {
-  const dated = `${new Date().toISOString()} ${line}`;
+  const dated = `${new Date().toISOString()} ${line.replace(/\s+/g, ' ').trim()}`;
   appendFileSync(join(progressDir, 'progress.md'), dated + '\n');
   appendFileSync(join(progressDir, 'REPORT.md'), dated + '\n\n');
   console.log(dated);

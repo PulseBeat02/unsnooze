@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.20.1-pulse.4 — 2026-10-12
+
+- Preserve the legacy `daemon --on-demand` startup protocol and exit safely
+  when uninstall removed its request marker before startup, on every platform.
+- Add a sequential five-pass acceptance runner: all tests, lint, reproducible
+  package checks and 19 isolated workflows using the installed artifact.
+- Exercise all account commands and provider usage, exact conversation handoff,
+  parked-session recovery, daemon crashes, updater gates and staged rollback.
+- Provide a Bash migration block preserving continuation shortcuts, including
+  bare `codex -c` as `codex resume --last`, without changing valued config flags.
+- Run the real fish checks wherever fish is available and verify release
+  metadata coherence before shipping an artifact.
+
 ## 1.20.1-pulse.3 — 2026-10-12
 
 - Exercise worker death after an account-switch commit and before forwarding,
