@@ -55,6 +55,58 @@ test('corrupt JSON reports a fixed error without bytes or native parser details'
   assert.equal(readFileSync(path, 'utf8'), 'SUPRSECRET_invalid');
 });
 
+test('private reads retry a legitimate atomic rename between lstat and open', async () => {
+  const path = file('heartbeat.json'), replacement = file('heartbeat-next.json');
+  atomicPrivateJson(path, { generation: 1 });
+  atomicPrivateJson(replacement, { generation: 2 });
+  const fixture = child(`import fs from 'node:fs';
+    import {syncBuiltinESMExports} from 'node:module';
+    const original=fs.openSync;let opens=0;
+    fs.openSync=(path,...args)=>{
+      if(path===${JSON.stringify(path)} && ++opens===1)fs.renameSync(${JSON.stringify(replacement)},path);
+      return original(path,...args);
+    };
+    syncBuiltinESMExports();
+    const {readPrivateJson}=await import(${JSON.stringify(MODULE)});
+    process.stdout.write(JSON.stringify({value:readPrivateJson(${JSON.stringify(path)}),opens}));`);
+  const result = await fixture.ended;
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { value: { generation: 2 }, opens: 2 });
+});
+
+test('private open retries are bounded and never accept an injected symlink', { skip: !posix }, async () => {
+  const path = file('changing.json'), source = file('link-source.json');
+  atomicPrivateJson(path, {});
+  atomicPrivateJson(source, {});
+  const fixture = child(`import fs from 'node:fs';
+    import {syncBuiltinESMExports} from 'node:module';
+    const original=fs.openSync;let opens=0;let attack=false;
+    fs.openSync=(path,...args)=>{
+      if(path===${JSON.stringify(path)}) {
+        opens++;
+        const next=path+'.replacement';
+        if(attack)fs.symlinkSync(${JSON.stringify(source)},next);
+        else fs.writeFileSync(next,'{}',{mode:0o600});
+        fs.renameSync(next,path);
+      }
+      return original(path,...args);
+    };
+    syncBuiltinESMExports();
+    const {readPrivateJson}=await import(${JSON.stringify(MODULE)});
+    const codes=[];
+    try{readPrivateJson(${JSON.stringify(path)})}catch(e){codes.push(e.code)}
+    const boundedOpens=opens;
+    attack=true;
+    try{readPrivateJson(${JSON.stringify(path)})}catch(e){codes.push(e.code)}
+    process.stdout.write(JSON.stringify({codes,boundedOpens,opens}));`);
+  const result = await fixture.ended;
+  assert.equal(result.code, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.boundedOpens, 5);
+  assert.equal(output.opens, 6);
+  assert.deepEqual(output.codes, ['PRIVATE_FILE', 'STORE_READ']);
+});
+
 test('private reads reject exposed files, symlinks, hardlinks, and directories', { skip: !posix }, () => {
   const path = file('private.json');
   atomicPrivateJson(path, {});

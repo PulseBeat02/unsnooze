@@ -34,22 +34,32 @@ function privateStat(st) {
 // swapped while opening. The inode comparison also protects platforms where
 // O_NOFOLLOW is unavailable. O_NONBLOCK avoids hanging on an injected FIFO.
 function openPrivate(path) {
-  let fd;
-  try {
-    const before = lstatSync(path);
-    if (!privateStat(before)) throw new PrivateStoreError('PRIVATE_FILE');
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
-    const actual = fstatSync(fd);
-    if (!privateStat(actual) || before.dev !== actual.dev || before.ino !== actual.ino) {
-      throw new PrivateStoreError('PRIVATE_FILE');
+  for (let attempt = 0; attempt < 5; attempt++) {
+    let fd;
+    try {
+      const before = lstatSync(path);
+      if (!privateStat(before)) throw new PrivateStoreError('PRIVATE_FILE');
+      fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
+      const actual = fstatSync(fd);
+      if (!privateStat(actual)) throw new PrivateStoreError('PRIVATE_FILE');
+      if (before.dev !== actual.dev || before.ino !== actual.ino) {
+        // A concurrent atomic writer may legitimately replace a private file
+        // between lstat and open. Retry the complete protected open rather
+        // than accepting either inode on faith. A busy/malicious swap loop is
+        // bounded, and links/nonprivate files still fail immediately.
+        closeSync(fd);
+        fd = undefined;
+        if (attempt < 4) continue;
+        throw new PrivateStoreError('PRIVATE_FILE');
+      }
+      return fd;
+    } catch (err) {
+      if (fd !== undefined) closeSync(fd);
+      if (err instanceof PrivateStoreError) throw err;
+      // Only the caller that requested a fallback may handle absence.
+      if (err?.code === 'ENOENT') throw Object.assign(new PrivateStoreError('STORE_READ'), { missing: true });
+      throw new PrivateStoreError('STORE_READ');
     }
-    return fd;
-  } catch (err) {
-    if (fd !== undefined) closeSync(fd);
-    if (err instanceof PrivateStoreError) throw err;
-    // Only the caller that requested a fallback may handle absence.
-    if (err?.code === 'ENOENT') throw Object.assign(new PrivateStoreError('STORE_READ'), { missing: true });
-    throw new PrivateStoreError('STORE_READ');
   }
 }
 
