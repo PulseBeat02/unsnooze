@@ -18,6 +18,7 @@ import { getConfig } from './settings.js';
 import { ROLLOUT_RE, rolloutId } from './agents/codex.js';
 import { shouldUseTui, formatUsageTui, bar as tuiBar } from './tui.js';
 import { shouldUseDashboard, runDashboard } from './dashboard/run.js';
+import { fetchUsageSnapshot } from './accounts/usage.js';
 
 // ---------------------------------------------------------------------------
 // Constants & pure math
@@ -951,6 +952,7 @@ function fmtReset(ms) {
 }
 
 export function formatUsageText(report) {
+  if (report.providers) return formatAccountUsageText(report);
   const warn = (report.warnAt || DEFAULT_USAGE_WARN_AT).join(',');
   const daemon = report.daemonRunning ? 'running' : 'not running';
   const lines = [
@@ -1015,6 +1017,8 @@ export function usageReportToJson(report) {
     now: report.now,
     daemonRunning: !!report.daemonRunning,
     warnAt: report.warnAt || DEFAULT_USAGE_WARN_AT,
+    ...(report.providers ? { providers: report.providers,
+      accountUsageFetchedAt: report.accountUsageFetchedAt ?? null } : {}),
     agents: (report.agents || []).map(a => ({
       agent: a.agent,
       lowerBound: !!a.lowerBound,
@@ -1037,6 +1041,40 @@ export function usageReportToJson(report) {
       })),
     })),
   };
+}
+
+export function buildAccountUsageReport(snapshot, {
+  now = Date.now(), daemonRunning = false, warnAt = DEFAULT_USAGE_WARN_AT,
+} = {}) {
+  return { now, daemonRunning, warnAt, agents: [], providers: snapshot.providers,
+    accountUsageFetchedAt: snapshot.fetchedAt };
+}
+
+export function formatAccountUsageText(report) {
+  const lines = ['unsnooze usage — exact account quotas', ''];
+  for (const [provider, section] of Object.entries(report.providers || {})) {
+    for (const account of section.accounts || []) {
+      const age = formatAccountUsageAge(account.fetchedAt, report.now);
+      lines.push(`  ${provider} · ${account.name} (${account.id}) · ${account.status}`);
+      lines.push(`    ${account.stale ? 'STALE · ' : ''}${age} · ${account.source}`);
+      if (account.message) lines.push(`    ${account.message}`);
+      for (const w of account.windows || []) {
+        const label = `${w.group ? `${w.group} · ` : ''}${w.label}`;
+        lines.push(`    ${label} [${asciiBar(w.usedPercent)}] ${w.usedPercent}% USED (exact)`);
+        lines.push(`      resets ${w.resetAt == null ? 'unknown' : new Date(w.resetAt).toISOString()}`);
+      }
+      lines.push('');
+    }
+  }
+  return lines.join('\n');
+}
+
+export function formatAccountUsageAge(fetchedAt, now = Date.now()) {
+  if (fetchedAt == null) return 'never fetched';
+  const age = Math.max(0, now - fetchedAt);
+  if (age < 1000) return 'just now';
+  if (age < 60_000) return `${Math.floor(age / 1000)}s ago`;
+  return `${fmtDuration(age)} ago`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1441,10 +1479,29 @@ export async function cmdUsage(args = []) {
 
   const asJson = args.includes('--json');
   // Interactive TTY (human path) → live dashboard Usage tab
-  if (!asJson && shouldUseDashboard()) return runDashboard({ tab: 'usage' });
+  if (!asJson && shouldUseDashboard()) {
+    if (args.includes('--refresh') || args.includes('--probe')) {
+      try {
+        await fetchUsageSnapshot({ refresh: true, allowProbe: args.includes('--probe') });
+      } catch {
+        console.error('unsnooze usage: account usage could not be refreshed.');
+        return 1;
+      }
+    }
+    return runDashboard({ tab: 'usage' });
+  }
   try {
     const now = Date.now();
     const state = readState();
+    const accountUsage = await fetchUsageSnapshot({ now, refresh: args.includes('--refresh') || args.includes('--probe'),
+      allowProbe: args.includes('--probe') });
+    if (Object.keys(accountUsage.providers).length) {
+      const report = buildAccountUsageReport(accountUsage, { now,
+        daemonRunning: daemonPidAlive(state.resumerPid),
+        warnAt: parseUsageWarnAt(getConfig('usageWarnAt')) });
+      console.log(asJson ? JSON.stringify(usageReportToJson(report), null, 2) : formatAccountUsageText(report));
+      return usageExitCode(report);
+    }
     const store = readUsageStore();
     // Prefer daemon-accumulated samples when fresh; always cold-scan to fill gaps.
     const claudeCold = collectClaudeSamples({ now });
@@ -1496,6 +1553,12 @@ export function usageExitCode(report) {
   const warnAt = report.warnAt || DEFAULT_USAGE_WARN_AT;
   if (!warnAt.length) return 0;
   const high = Math.max(...warnAt);
+  if (report.providers) {
+    const accounts = Object.values(report.providers).flatMap(p => p.accounts || []).filter(a => a.enabled !== false);
+    const live = accounts.filter(a => !a.stale && ['ok', 'quota_exhausted'].includes(a.status));
+    if (accounts.length && !live.length) return 1;
+    if (live.some(a => (a.windows || []).some(w => w.usedPercent >= high))) return 2;
+  }
   const over = (report.agents || []).some(a =>
     (a.windows || []).some(w => !w.infoOnly && w.ladder?.pct != null && w.ladder.pct >= high));
   return over ? 2 : 0;

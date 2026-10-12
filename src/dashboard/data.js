@@ -10,7 +10,9 @@ import {
   readExactClaudeFromStatusline,
   parseUsageWarnAt,
   readUsageStore,
+  buildAccountUsageReport,
 } from '../usage.js';
+import { fetchUsageSnapshot } from '../accounts/usage.js';
 import { listOwnedSessions } from '../reap.js';
 import { runDoctor } from '../doctor.js';
 import { fetchFleet, readHosts } from '../fleet.js';
@@ -31,9 +33,14 @@ export function loadStatusSnapshot() {
   };
 }
 
-export async function loadUsageSnapshot() {
+export async function loadUsageSnapshot(options = {}) {
   const now = Date.now();
   const state = readState();
+  const accountUsage = await fetchUsageSnapshot({ now, ...options });
+  if (Object.keys(accountUsage.providers).length) {
+    return buildAccountUsageReport(accountUsage, { now, daemonRunning: pidAlive(state.resumerPid),
+      warnAt: parseUsageWarnAt(getConfig('usageWarnAt')) });
+  }
   const store = readUsageStore();
   // Throttled cold scan — callers should not fire more than every ~5s
   const claudeSamples = collectClaudeSamples({ now });

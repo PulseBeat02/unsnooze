@@ -2,7 +2,7 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import { bar } from '../data.js';
 import { theme, gaugeColor } from '../theme.js';
-import { fmtUsageProvenance, fmtDuration } from '../../usage.js';
+import { fmtUsageProvenance, fmtDuration, formatAccountUsageAge } from '../../usage.js';
 
 const h = React.createElement;
 
@@ -14,6 +14,7 @@ function fmtTok(n) {
 
 export function UsageTab({ data }) {
   if (!data) return h(Text, { color: theme.muted }, 'Loading usage… (cold scan)');
+  if (data.providers) return h(AccountUsageTab, { data });
   const warn = (data.warnAt || [80, 95]).join(',');
   const daemon = data.daemonRunning ? 'running' : 'not running';
 
@@ -65,4 +66,33 @@ export function UsageTab({ data }) {
     }),
     h(Text, { color: theme.muted, dimColor: true }, 'Claude sums are a lower bound (account-pooled with claude.ai).'),
   );
+}
+
+function AccountUsageTab({ data }) {
+  const rows = [];
+  for (const [provider, section] of Object.entries(data.providers)) {
+    for (const account of section.accounts || []) {
+      const key = `${provider}:${account.id}`;
+      const age = formatAccountUsageAge(account.fetchedAt, data.now);
+      rows.push(h(Text, { key, bold: true, color: theme.bright },
+        `${provider} · ${account.name} (${account.id}) · ${account.status}`));
+      rows.push(h(Text, { key: `${key}:source`, color: account.stale ? theme.warn : theme.muted },
+        `  ${account.stale ? 'STALE · ' : ''}${age} · ${account.source}`));
+      if (account.message) rows.push(h(Text, { key: `${key}:message`, color: theme.warn }, `  ${account.message}`));
+      for (const w of account.windows || []) {
+        const windowKey = `${key}:${w.id}`;
+        rows.push(h(Text, { key: windowKey },
+          h(Text, { color: theme.muted }, `  ${w.group ? `${w.group} · ` : ''}${w.label} `),
+          h(Text, { color: gaugeColor(w.usedPercent) }, bar(w.usedPercent, 20)),
+          h(Text, { color: theme.bright }, ` ${w.usedPercent}% USED`),
+          h(Text, { color: theme.muted }, ' (exact)')));
+        rows.push(h(Text, { key: `${windowKey}:reset`, color: theme.muted },
+          `    resets ${w.resetAt == null ? 'unknown' : new Date(w.resetAt).toISOString()}`));
+      }
+      rows.push(h(Text, { key: `${key}:gap` }, ' '));
+    }
+  }
+  return h(Box, { flexDirection: 'column' },
+    h(Text, { color: theme.muted }, 'Exact account quotas · USED percentages'),
+    h(Text, null, ' '), ...rows);
 }
