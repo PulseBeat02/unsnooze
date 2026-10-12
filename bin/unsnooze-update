@@ -3,7 +3,8 @@
 set -euo pipefail
 task_repo="${UNSNOOZE_FORK_REPO:-$HOME/projects/unsnooze}"
 cd "$task_repo"
-exec 9> .git/unsnooze-update.lock
+task_lock="$(git rev-parse --git-path unsnooze-update.lock)"
+exec 9> "$task_lock"
 flock -n 9 || exit 0
 test "$(git branch --show-current)" = main
 test -z "$(git status --porcelain)"
@@ -15,6 +16,9 @@ git pull --ff-only origin main
 npm ci --no-audit --no-fund
 npm test
 npm run lint
-npm install -g . --no-audit --no-fund
+task_pack_dir="$(mktemp -d)"
+trap 'rm -rf -- "$task_pack_dir"' EXIT
+npm pack --pack-destination "$task_pack_dir" --silent
+npm install -g "$task_pack_dir"/*.tgz --no-audit --no-fund
 unsnooze --version
 unsnooze daemon ensure

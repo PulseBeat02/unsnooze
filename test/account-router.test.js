@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { startAccountProxy, routerToken, upstreamRoute, upstreamHeaders } from '../src/accounts/proxy.js';
+import { readResumeRequest } from '../src/accounts/sessions.js';
 
 const root = mkdtempSync(join(tmpdir(), 'unsnooze-router-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -102,7 +104,7 @@ test('incremental server response chain is not silently replayed on another acco
   try {
     const r = await fetch(s.url + '/codex/responses', { method: 'POST', headers: { authorization: `Bearer ${s.token}` },
       body: JSON.stringify({ previous_response_id: 'response-from-another-account', input: [] }) });
-    assert.equal(r.status, 409); assert.equal(calls, 1);
+    assert.equal(r.status, 409); assert.equal(calls, 0);
   } finally { await s.close(); }
 });
 
@@ -111,4 +113,55 @@ test('corrupt router token and nonloopback binding fail closed', async () => {
   writeFileSync(join(s.stateDir, 'router-token'), 'fake-secret-corruption', { mode: 0o600 });
   assert.throws(() => routerToken(s.stateDir), error => !error.message.includes('fake-secret'));
   await assert.rejects(startAccountProxy({ host: '0.0.0.0' }), /loopback/);
+});
+
+test('accepted upstream work is delivered once even if quota cache persistence fails', async () => {
+  let calls = 0;
+  const s = await fixture({
+    fetchFn: async () => { calls++; return new Response('data: accepted\n\n', { headers: { 'content-type': 'text/event-stream' } }); },
+    usageHeadersFn: async () => { throw new Error('synthetic disk failure'); },
+  });
+  try {
+    const r = await fetch(s.url + '/codex/responses', { method: 'POST',
+      headers: { authorization: `Bearer ${s.token}` }, body: '{}' });
+    assert.equal(r.status, 200);
+    assert.equal(await r.text(), 'data: accepted\n\n');
+    assert.equal(calls, 1);
+  } finally { await s.close(); }
+});
+
+test('temporary request throttling never blocks an account or retries on another login', async () => {
+  let calls = 0, blocked = 0;
+  const s = await fixture({
+    fetchFn: async () => { calls++; return new Response('untrusted provider error', { status: 429, headers: { 'retry-after': '2' } }); },
+    failureFn: async () => { blocked++; },
+  });
+  try {
+    const r = await fetch(s.url + '/codex/responses', { method: 'POST',
+      headers: { authorization: `Bearer ${s.token}` }, body: '{}' });
+    assert.equal(r.status, 429);
+    assert.equal((await r.json()).error.type, 'rate_limit_error');
+    assert.equal(calls, 1);
+    assert.equal(blocked, 0);
+  } finally { await s.close(); }
+});
+
+test('persisted affinity requests an exact resume before a first-attempt threshold switch', async () => {
+  let account = 'a', calls = 0;
+  const launchId = randomUUID();
+  const s = await fixture({
+    selectFn: async () => ({ account: { id: account } }),
+    fetchFn: async () => { calls++; return new Response('accepted'); },
+  });
+  try {
+    const headers = { authorization: `Bearer ${s.token}`, session_id: 'same-conversation', 'x-unsnooze-launch': launchId };
+    const first = await fetch(s.url + '/codex/responses', { method: 'POST', headers, body: '{}' });
+    assert.equal(first.status, 200); await first.text();
+    account = 'b';
+    const next = await fetch(s.url + '/codex/responses', { method: 'POST', headers,
+      body: JSON.stringify({ previous_response_id: 'belongs-to-a', input: [] }) });
+    assert.equal(next.status, 409);
+    assert.equal(calls, 1, 'the incremental payload never reaches the other account');
+    assert.equal(readResumeRequest(launchId, s.stateDir).sessionId, 'same-conversation');
+  } finally { await s.close(); }
 });

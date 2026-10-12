@@ -46,15 +46,25 @@ export function hideAgentWindow(streams = process) {
   return !(streams.stdin?.isTTY || streams.stdout?.isTTY || streams.stderr?.isTTY);
 }
 
-function runUnwatched(agent, args, reason) {
+function runUnwatched(agent, args, reason, options = {}) {
   if (reason) process.stderr.write(`unsnooze: ${reason}\n`);
-  return runPassthrough(agent, args);
+  return runPassthrough(agent, args, options);
 }
 
 // spawnSync reports a binary it could not start as r.error with no status;
 // `r.status ?? 1` alone turned `spawn codex ENOENT` into a silent exit 1.
-function runPassthrough(agent, args) {
-  const r = spawnSync(agent.bin, args, { stdio: 'inherit', env: { ...process.env, UNSNOOZE_ACTIVE: '1' } });
+function runPassthrough(agent, args, { onChild, childEnv = {}, processBirthFn = processBirth } = {}) {
+  const env = { ...process.env, ...childEnv, UNSNOOZE_ACTIVE: '1' };
+  if (onChild) {
+    return new Promise(resolve => {
+      const child = spawn(agent.bin, args, { stdio: 'inherit', env, windowsHide: hideAgentWindow() });
+      onChild(child, { leaseId: createLeaseId(), pid: child.pid, pidBirth: processBirthFn(child.pid),
+        agent: agent.id, mux: 'headless', pane: null, paneOwner: null });
+      child.once('exit', code => resolve(code ?? 1));
+      child.once('error', error => resolve(launchFailed(agent, error)));
+    });
+  }
+  const r = spawnSync(agent.bin, args, { stdio: 'inherit', env });
   if (r.error) return launchFailed(agent, r.error);
   return r.status ?? 1;
 }
@@ -63,8 +73,10 @@ export function runLauncher(args, agentId = 'claude', {
   processBirthFn = processBirth, ensureDaemonFn = ensureDaemon,
   onChild = null,
   binOverride = null,
+  forceWatch = false, childEnv: extraChildEnv = {},
 } = {}) {
   const agent = binOverride ? { ...getAgent(agentId), bin: binOverride } : getAgent(agentId);
+  const managedOptions = { onChild, childEnv: extraChildEnv, processBirthFn };
 
   // Recursion / nested-launch guard: inside an unsnooze-managed session, a
   // plain `claude`/`codex`/`unsnooze` call goes straight through. Same for an
@@ -74,8 +86,8 @@ export function runLauncher(args, agentId = 'claude', {
   // also bypass multiplexer wrapping and monitoring — running a new tmux session
   // or spawning a watcher for `claude --help` flashes the screen and slows down
   // simple queries.
-  if (process.env.UNSNOOZE_ACTIVE === '1' || isPassthrough(args) || !getConfig(`agents.${agent.id}`)) {
-    return runPassthrough(agent, args);
+  if (process.env.UNSNOOZE_ACTIVE === '1' || isPassthrough(args) || (!forceWatch && !getConfig(`agents.${agent.id}`))) {
+    return runPassthrough(agent, args, managedOptions);
   }
 
   // Flags the user wants on every session they start (claude's --autocompact
@@ -96,7 +108,7 @@ export function runLauncher(args, agentId = 'claude', {
       } else {
         process.stderr.write(`unsnooze: install ${mux.name} to enable auto-resume.\n`);
       }
-      return runUnwatched(agent, args);
+      return runUnwatched(agent, args, null, managedOptions);
     }
     log(`not in ${mux.name} — wrapping into a managed session`);
     try {
@@ -132,7 +144,7 @@ export function runLauncher(args, agentId = 'claude', {
         ? `${err.message} — running without limit-watch.`
         : `failed to wrap into ${mux.name} (${err.message}) — running without limit-watch.`;
       log(`launchWrapped failed: ${err.stack || err}`);
-      return runUnwatched(agent, args, msg);
+      return runUnwatched(agent, args, msg, managedOptions);
     }
   }
 
@@ -188,7 +200,7 @@ export function runLauncher(args, agentId = 'claude', {
   }
 
   const childEnv = {
-    ...process.env, UNSNOOZE_ACTIVE: '1', UNSNOOZE_MUX: mux.name,
+    ...process.env, ...extraChildEnv, UNSNOOZE_ACTIVE: '1', UNSNOOZE_MUX: mux.name,
     UNSNOOZE_PANE: pane || '', UNSNOOZE_PANE_OWNER: paneOwner || '',
     UNSNOOZE_LEASE_ID: leaseId,
   };
@@ -214,7 +226,8 @@ export function runLauncher(args, agentId = 'claude', {
   // agent is alive; ownership checks stay exactly as strict, because
   // leaseMatches() still refuses to match a lease with a null birth.
   if (lease) writeLease(lease);
-  onChild?.(child, lease);
+  onChild?.(child, lease || { leaseId, mux: mux.name, paneOwner, pane,
+    agent: agent.id, pid: child.pid, pidBirth: processBirthFn(child.pid) });
   const cleanup = () => { if (lease) removeLease(lease, leaseId); };
   return new Promise(resolve => {
     child.on('exit', code => { cleanup(); resolve(code ?? 1); });

@@ -6,6 +6,7 @@ import { readAccounts, mutateAccounts } from './config.js';
 import { chooseAccount } from './select.js';
 import { fetchUsageSnapshot } from './usage.js';
 import { readPrivateJson, atomicPrivateJson, withStoreLock } from './store.js';
+import { scopeUsage } from './scope.js';
 
 const empty = () => ({ version: 1, providers: {} });
 
@@ -29,6 +30,7 @@ export async function recordAccountFailure(provider, id, status, {
 export async function selectRoutingAccount(provider, {
   stateDir = STATE_DIR, reason = 'request', exclude = [], refresh = false,
   now, usageFn = fetchUsageSnapshot, minFetchedAt = 0,
+  model,
 } = {}) {
   const snapshot = await usageFn({ stateDir, refresh, allowProbe: provider === 'claude' });
   now ??= Date.now();
@@ -40,7 +42,8 @@ export async function selectRoutingAccount(provider, {
     const p = state.providers[provider] ||= { blocked: {}, lastSwitchAt: 0 };
     p.blocked ||= {};
     const usage = {};
-    for (const entry of snapshot.providers?.[provider]?.accounts || []) {
+    for (const rawEntry of snapshot.providers?.[provider]?.accounts || []) {
+      const entry = scopeUsage(provider, rawEntry, model, { now });
       const block = p.blocked[entry.id];
       const live = entry.status === 'ok' && !entry.stale && entry.fetchedAt >= minFetchedAt;
       if (block && live && entry.fetchedAt > block.observedAt) delete p.blocked[entry.id];

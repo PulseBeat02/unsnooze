@@ -17,7 +17,7 @@ const {
 after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 beforeEach(() => {
   rmSync(join(DIR, 'update-check.json'), { force: true });
-  delete process.env.UNSNOOZE_UPDATE_CHECK;
+  process.env.UNSNOOZE_UPDATE_CHECK = 'on'; // Explicitly test opt-in update notices.
 });
 
 test('isNewer: plain x.y.z comparison, garbage never wins', () => {
@@ -29,6 +29,9 @@ test('isNewer: plain x.y.z comparison, garbage never wins', () => {
   assert.equal(isNewer('banana', '1.0.0'), false);
   assert.equal(isNewer('1.0.0-beta.1', '1.0.0'), false);
   assert.equal(isNewer(null, '1.0.0'), false);
+  assert.equal(isNewer('1.21.0', '1.20.1-pulse.1'), true);
+  assert.equal(isNewer('1.20.1', '1.20.1-pulse.1'), false);
+  assert.equal(isNewer('1.20.1', '1.20.1-secret'), false);
 });
 
 test('updateNotice: silent with no cache, speaks when latest is newer', () => {

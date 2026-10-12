@@ -1,14 +1,18 @@
-// Antigravity owns its OAuth client and refresh operation. Never extract its
-// client secret: serialize native CLI lifetimes around its credential file.
+// The native CLI is Antigravity's only OAuth refresh owner. A durable slot
+// journal and inherited process nonce keep a dead wrapper from freeing a live CLI.
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { STATE_DIR } from '../config.js';
 import { readAccounts, mutateAccounts } from './config.js';
 import { readPrivateJson, atomicPrivateJson, withStoreLock } from './store.js';
+import { readCredential } from './credentials.js';
 import { selectRoutingAccount } from './routing.js';
+import { accountProcessBirth } from './daemon.js';
 
 export function agyResumeArgs(sessionId) {
-  if (typeof sessionId !== 'string' || !sessionId || /[\x00-\x1f\x7f]/.test(sessionId)) {
+  if (typeof sessionId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(sessionId)) {
     throw new Error('A known conversation is required to switch Antigravity accounts.');
   }
   return ['--conversation', sessionId];
@@ -29,24 +33,67 @@ export function saveAgyCredential(account, nativePath) {
   atomicPrivateJson(account.credential.path, data);
 }
 
-export async function runManagedAgy(args, { stateDir = STATE_DIR, launchFn = null,
-  nativePath = join(homedir(), '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
-  selectFn = selectRoutingAccount, readStateFn = null, intervalMs = 5000,
+export function readAgyJournal(stateDir = STATE_DIR) {
+  const journal = readPrivateJson(join(stateDir, 'agy-native-session.json'), null);
+  if (!journal) return null;
+  if (journal.version !== 1 || !['installing', 'prepared', 'running', 'switching', 'complete'].includes(journal.phase)
+    || !/^[a-f0-9-]{36}$/.test(journal.launchNonce) || !journal.account?.credential) {
+    throw new Error('Antigravity ownership state is invalid.');
+  }
+  return journal;
+}
+
+export function agyOwnerAlive(journal, { platform = process.platform, procRoot = '/proc',
+  birthFn = accountProcessBirth, readFile = readFileSync, readdir = readdirSync, stat = statSync,
 } = {}) {
-  if (!launchFn) {
-    const { getMultiplexer } = await import('../multiplexer.js');
-    const mux = getMultiplexer();
-    if (!mux.inside() && mux.available() && !args.some(x => ['-p', '--print'].includes(x))) {
-      return (await import('../launcher.js')).runLauncher(args, 'agy');
+  if (!journal || journal.phase === 'complete' || journal.phase === 'installing') return false;
+  if (journal.child?.pid) {
+    const birth = birthFn(journal.child.pid);
+    if (birth && (!journal.child.pidBirth || birth === journal.child.pidBirth)) return true;
+  }
+  // A parent may die between spawn and PID publication. The nonce was saved
+  // BEFORE spawn and inherited by both the native process and its descendants.
+  if (platform !== 'linux') return !journal.child;
+  const marker = `UNSNOOZE_AGY_LAUNCH_NONCE=${journal.launchNonce}`;
+  for (const name of readdir(procRoot)) {
+    if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
+    const directory = join(procRoot, name);
+    try {
+      if (typeof process.getuid === 'function' && stat(directory).uid !== process.getuid()) continue;
+      const info = readFile(join(directory, 'stat'), 'utf8');
+      if (info.slice(info.lastIndexOf(')') + 2).startsWith('Z ')) continue;
+      if (readFile(join(directory, 'environ'), 'utf8').split('\0').includes(marker)) return true;
+    } catch (error) {
+      if (!['ENOENT', 'ESRCH'].includes(error.code)) return true;
     }
   }
+  return false;
+}
+
+export function recoverAgySlot(journal, nativePath, { aliveFn = agyOwnerAlive } = {}) {
+  if (!journal || journal.phase === 'complete') return;
+  if (aliveFn(journal)) throw new Error('An Antigravity credential owner is still running.');
+  // 'installing' may mean the new token has not reached the slot yet. No child
+  // can have started then; never copy that ambiguous slot into an account.
+  if (journal.phase !== 'installing') saveAgyCredential(journal.account, nativePath);
+}
+
+function option(args, name) {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : args.find(a => a.startsWith(`${name}=`))?.slice(name.length + 1);
+}
+
+export async function runManagedAgy(args, { stateDir = STATE_DIR, launchFn = null,
+  nativePath = join(homedir(), '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
+  selectFn = selectRoutingAccount, readStateFn = null, updateStateFn = null,
+  ownerAliveFn = agyOwnerAlive, intervalMs = 5000,
+} = {}) {
   const profile = readAccounts(stateDir).providers.agy;
   if (!profile?.accounts.some(a => a.enabled)) throw new Error('No enabled Antigravity account.');
-  // One native credential consumer at a time. Other providers and their
-  // sessions remain concurrent; a second agy launch waits without refreshing.
   return withStoreLock(join(stateDir, 'agy-native-session'), async () => {
-    // Detach the native slot before switching away, otherwise overwriting that
-    // slot would also overwrite the first account's only stored reference.
+    const journalPath = join(stateDir, 'agy-native-session.json');
+    const prior = readAgyJournal(stateDir);
+    recoverAgySlot(prior, nativePath, { aliveFn: ownerAliveFn });
     await mutateAccounts(config => {
       for (const item of config.providers.agy.accounts) {
         if (resolve(item.credential.path) !== resolve(nativePath)) continue;
@@ -58,48 +105,82 @@ export async function runManagedAgy(args, { stateDir = STATE_DIR, launchFn = nul
     const currentProfile = readAccounts(stateDir).providers.agy;
     const run = launchFn || (await import('../launcher.js')).runLauncher;
     const read = readStateFn || (await import('../state.js')).readState;
-    let chosen = await selectFn('agy', { stateDir });
-    // An expired access token is handed to agy, which can refresh its own login.
-    // It is never treated as quota exhaustion or refreshed by unsnooze.
-    let account = chosen.account || currentProfile.accounts.find(a => a.enabled
-      && a.id === (currentProfile.pinnedAccountId || currentProfile.activeAccountId)) || currentProfile.accounts.find(a => a.enabled);
-    let nextArgs = args;
+    const update = updateStateFn || (await import('../state.js')).updateState;
+    const model = option(args, '--model');
+    const chosen = await selectFn('agy', { stateDir, model, refresh: true });
+    let account = chosen.account;
+    if (!account && ['expired_login', 'pinned_unavailable', 'never_switch'].includes(chosen.reason)) {
+      const candidate = currentProfile.accounts.find(a => a.enabled
+        && a.id === (currentProfile.pinnedAccountId || currentProfile.activeAccountId));
+      if (candidate && readCredential(candidate).expiresAt < Date.now()) account = candidate;
+    }
+    if (!account) throw new Error('Antigravity quota is unavailable; no native session was started.');
+    let nextArgs = args, resumeTarget = null;
     for (;;) {
+      const launchNonce = randomUUID();
+      let journal = { version: 1, phase: 'installing', launchNonce,
+        account: { id: account.id, credential: account.credential }, cwd: process.cwd(),
+        wrapperPid: process.pid, wrapperBirth: accountProcessBirth(process.pid),
+        sessionId: resumeTarget?.sessionId || option(nextArgs, '--conversation') || null, child: null,
+        target: resumeTarget, updatedAt: Date.now() };
+      atomicPrivateJson(journalPath, journal);
       installAgyCredential(account, nativePath);
-      let child = null, lease = null, switching = null, checking = false;
+      journal.phase = 'prepared'; atomicPrivateJson(journalPath, journal);
+      let child = null, lease = null, switching = null, inFlight = null, ended = false;
       const check = async () => {
-        if (!lease || !child || switching || checking) return;
-        checking = true;
-        try {
-          saveAgyCredential(account, nativePath);
-          const stopped = Object.values(read().sessions || {}).find(s => s.agent === 'agy'
-            && s.leaseId === lease.leaseId && s.status === 'stopped' && s.sessionId);
-          if (!stopped) return;
-          const next = await selectFn('agy', { stateDir, reason: 'limit', refresh: true,
-            exclude: [account.id], minFetchedAt: stopped.detectedAt || 0 });
-          if (!next.account || next.account.id === account.id) return;
-          switching = { account: next.account, sessionId: stopped.sessionId };
-          atomicPrivateJson(join(stateDir, 'agy-switch.json'), { version: 1,
-            sessionId: stopped.sessionId, key: stopped.key, cwd: stopped.cwd,
-            from: account.id, to: next.account.id, at: Date.now(), phase: 'selected' });
-          child.kill('SIGTERM');
-        } finally { checking = false; }
+        if (!lease || !child || switching || ended) return;
+        saveAgyCredential(account, nativePath);
+        const stopped = Object.values(read().sessions || {}).find(s => s.agent === 'agy'
+          && s.leaseId === lease.leaseId && s.status === 'stopped' && s.sessionId);
+        if (!stopped) return;
+        const next = await selectFn('agy', { stateDir, model, reason: 'limit', refresh: true,
+          exclude: [account.id], minFetchedAt: stopped.detectedAt || 0 });
+        if (ended || !next.account || next.account.id === account.id) return;
+        switching = { account: next.account, sessionId: stopped.sessionId, key: stopped.key, detectedAt: stopped.detectedAt };
+        journal = { ...journal, phase: 'switching', target: { accountId: next.account.id,
+          sessionId: stopped.sessionId, key: stopped.key, detectedAt: stopped.detectedAt } };
+        atomicPrivateJson(journalPath, journal);
+        child.kill('SIGTERM');
       };
-      const timer = setInterval(() => { check().catch(() => {}); }, intervalMs);
+      const timer = setInterval(() => {
+        if (!inFlight) inFlight = check().catch(() => {}).finally(() => { inFlight = null; });
+      }, intervalMs);
       timer.unref();
       let code;
-      try { code = await run(nextArgs, 'agy', { onChild: (p, l) => { child = p; lease = l; } }); }
-      finally {
-        clearInterval(timer);
-        // Only the native CLI ever refreshes; preserve its latest token before
-        // another account is installed. Writes are atomic and owner-only.
+      try {
+        code = await run(nextArgs, 'agy', { forceWatch: true,
+          childEnv: { UNSNOOZE_AGY_LAUNCH_NONCE: launchNonce },
+          onChild: (p, metadata) => {
+            child = p; lease = metadata;
+            journal = { ...journal, phase: 'running', child: metadata };
+            try {
+              atomicPrivateJson(journalPath, journal);
+              if (resumeTarget?.key) update(state => {
+                const record = state.sessions[resumeTarget.key];
+                if (record?.sessionId !== resumeTarget.sessionId || record.detectedAt !== resumeTarget.detectedAt) return state;
+                Object.assign(record, { status: 'resuming', leaseId: metadata.leaseId,
+                  pane: metadata.pane, paneOwner: metadata.paneOwner, mux: metadata.mux,
+                  lastAttemptAt: Date.now(), resumeEpisodeAt: record.detectedAt, verifyRetries: 0 });
+                return state;
+              });
+            } catch (error) { child.kill('SIGTERM'); throw error; }
+          },
+        });
+      } finally {
+        ended = true; clearInterval(timer);
+        if (inFlight) await inFlight;
         saveAgyCredential(account, nativePath);
+        if (!ownerAliveFn(journal)) {
+          journal.phase = 'complete'; atomicPrivateJson(journalPath, journal);
+        }
       }
       if (!switching) return code;
+      if (ownerAliveFn(journal)) throw new Error('Antigravity still owns its credential slot.');
       account = switching.account;
-      nextArgs = agyResumeArgs(switching.sessionId);
-      atomicPrivateJson(join(stateDir, 'agy-switch.json'), { version: 1,
-        sessionId: switching.sessionId, to: account.id, at: Date.now(), phase: 'resuming' });
+      resumeTarget = switching;
+      const message = 'Continue where you left off in this same conversation after the account switch.';
+      nextArgs = [...(model ? ['--model', model] : []), ...agyResumeArgs(switching.sessionId),
+        args.some(a => ['-p', '--print'].includes(a)) ? '--print' : '--prompt-interactive', message];
     }
   });
 }

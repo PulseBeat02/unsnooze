@@ -21,7 +21,7 @@ tmux, Zellij, herdr or cmux, and on **macOS, Linux and Windows**, with or
 without a terminal multiplexer.
 
 ```sh
-npm install -g unsnooze && unsnooze setup
+npm install -g git+https://github.com/PulseBeat02/unsnooze.git && unsnooze setup
 ```
 
 <img src="assets/demo.svg" alt="terminal demo: limit banners detected in two sessions, unsnooze waits for the reset, then wakes both — good morning, the work is done" width="880"/>
@@ -39,7 +39,8 @@ npm release**:
 git clone git@github.com:PulseBeat02/unsnooze.git
 cd unsnooze
 npm ci && npm test && npm run lint
-npm install -g .
+npm pack
+npm install -g ./unsnooze-1.20.1-pulse.1.tgz
 unsnooze accounts import all
 unsnooze accounts list --json
 unsnooze usage --json --refresh
@@ -89,8 +90,9 @@ token needs Antigravity itself to refresh it; no OAuth client secret is extracte
 Claude and Codex route through an authenticated loopback server, changing
 credentials only between requests. Full request payloads and conversation IDs
 are preserved. Rejected requests may switch accounts; partially delivered
-streams are never replayed. Incremental `previous_response_id` chains require
-the CLI to resume its saved conversation instead of silently discarding context.
+streams are never replayed. Incremental `previous_response_id` chains use durable
+account affinity. A managed CLI restarts its exact saved conversation when the
+chain needs another account; an unmanaged API client receives `session_resume_required`.
 Codex uses HTTP streaming; the managed configuration disables WebSockets.
 Antigravity uses serialized native credential handoff and `--conversation <id>`
 at an observed limit stop. Its native CLI is the only refresh owner. Concurrent
@@ -128,7 +130,7 @@ existing tool solves only a slice of it:
 ## Quick start
 
 ```sh
-npm install -g unsnooze
+npm install -g git+https://github.com/PulseBeat02/unsnooze.git
 unsnooze setup      # pick agents; installs shell wrappers + the Claude hook
 ```
 

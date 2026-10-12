@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { readFileSync, openSync, closeSync, writeFileSync, lstatSync, mkdirSync } from 'node:fs';
+import { openSync, closeSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -8,10 +8,12 @@ import { STATE_DIR } from '../config.js';
 import { selectRoutingAccount, recordAccountFailure } from './routing.js';
 import { routingCredential } from './refresh.js';
 import { recordUsageHeaders } from './usage.js';
+import { claimSessionAccount } from './sessions.js';
+import { readPrivateText } from './store.js';
 
 const HOP_HEADERS = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
   'te', 'trailer', 'transfer-encoding', 'upgrade', 'host', 'content-length', 'cookie', 'set-cookie',
-  'authorization', 'x-api-key', 'x-openai-actor-authorization', 'chatgpt-account-id']);
+  'authorization', 'x-api-key', 'x-openai-actor-authorization', 'chatgpt-account-id', 'x-unsnooze-launch']);
 
 export function routerToken(stateDir = STATE_DIR) {
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -20,11 +22,7 @@ export function routerToken(stateDir = STATE_DIR) {
     const fd = openSync(path, 'wx', 0o600);
     try { writeFileSync(fd, randomBytes(32).toString('base64url')); } finally { closeSync(fd); }
   } catch (error) { if (error.code !== 'EEXIST') throw new Error('Cannot create router credential.'); }
-  const stat = lstatSync(path);
-  if (!stat.isFile() || stat.nlink !== 1 || (process.platform !== 'win32' && (stat.mode & 0o077))) {
-    throw new Error('Router credential must be an owner-only regular file.');
-  }
-  const value = readFileSync(path, 'utf8').trim();
+  const value = readPrivateText(path).trim();
   if (!/^[A-Za-z0-9_-]{43}$/.test(value)) throw new Error('Router credential is invalid.');
   return value;
 }
@@ -148,7 +146,7 @@ export async function startAccountProxy({ stateDir = STATE_DIR, host = '127.0.0.
       let lastFailure = null;
       for (let attempt = 0; attempt < 32; attempt++) {
         const selected = await selectFn(route.provider, { stateDir, exclude, refresh: attempt > 0,
-          reason: attempt ? 'limit' : 'request' });
+          reason: lastFailure === 'quota_exhausted' ? 'limit' : 'request', model: payload?.model });
         if (!selected.account) {
           const expired = lastFailure === 'expired_login' || /expired|auth|login/.test(selected.reason || '');
           const quota = lastFailure === 'quota_exhausted' || /exhaust|limit/.test(selected.reason || '');
@@ -169,7 +167,9 @@ export async function startAccountProxy({ stateDir = STATE_DIR, host = '127.0.0.
         }
         // Incremental server-side response chains belong to one account. Do not
         // pretend that removing previous_response_id reconstructs a transcript.
-        if (attempt && payload?.previous_response_id) {
+        if (!(await claimSessionAccount(route.provider, account.id, req.headers, {
+          stateDir, chained: !!payload?.previous_response_id,
+        }))) {
           return reply(res, 409, 'session_resume_required',
             'Account changed. Resume this same CLI conversation to resend its full transcript.');
         }
@@ -177,7 +177,8 @@ export async function startAccountProxy({ stateDir = STATE_DIR, host = '127.0.0.
           method: req.method, headers: upstreamHeaders(req.headers, route.provider, credential),
           ...(body.length ? { body } : {}), signal: controller.signal, redirect: 'error',
         });
-        await usageHeadersFn(route.provider, account.id, upstream.headers, { stateDir });
+        try { await usageHeadersFn(route.provider, account.id, upstream.headers, { stateDir }); }
+        catch { /* quota telemetry cannot turn accepted work into a retry */ }
         if (upstream.status === 401 || upstream.status === 429) {
           if (upstream.status === 429) {
             const errorBody = await upstream.text();

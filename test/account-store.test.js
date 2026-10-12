@@ -2,7 +2,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   mkdtempSync, rmSync, writeFileSync, readFileSync, statSync, chmodSync,
-  symlinkSync, linkSync, mkdirSync, readdirSync, utimesSync,
+  symlinkSync, linkSync, mkdirSync, readdirSync, utimesSync, constants,
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -55,7 +55,7 @@ test('corrupt JSON reports a fixed error without bytes or native parser details'
   assert.equal(readFileSync(path, 'utf8'), 'SUPRSECRET_invalid');
 });
 
-test('private reads retry a legitimate atomic rename between lstat and open', async () => {
+test('private reads verify the replacement inode after an atomic rename before open', async () => {
   const path = file('heartbeat.json'), replacement = file('heartbeat-next.json');
   atomicPrivateJson(path, { generation: 1 });
   atomicPrivateJson(replacement, { generation: 2 });
@@ -71,10 +71,10 @@ test('private reads retry a legitimate atomic rename between lstat and open', as
     process.stdout.write(JSON.stringify({value:readPrivateJson(${JSON.stringify(path)}),opens}));`);
   const result = await fixture.ended;
   assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), { value: { generation: 2 }, opens: 2 });
+  assert.deepEqual(JSON.parse(result.stdout), { value: { generation: 2 }, opens: constants.O_NOFOLLOW ? 1 : 2 });
 });
 
-test('private reads retry an inode unlinked by atomic rename after open', async () => {
+test('private reads retain a coherent opened snapshot across atomic rename', async () => {
   const path = file('opened-heartbeat.json'), replacement = file('opened-heartbeat-next.json');
   atomicPrivateJson(path, { generation: 1 });
   atomicPrivateJson(replacement, { generation: 2 });
@@ -95,10 +95,10 @@ test('private reads retry an inode unlinked by atomic rename after open', async 
     process.stdout.write(JSON.stringify({value:readPrivateJson(${JSON.stringify(path)}),stats}));`);
   const result = await fixture.ended;
   assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), { value: { generation: 2 }, stats: 2 });
+  assert.deepEqual(JSON.parse(result.stdout), { value: { generation: 1 }, stats: 1 });
 });
 
-test('private open retries are bounded and never accept an injected symlink', { skip: !posix }, async () => {
+test('private reads make progress during replacements and reject an injected symlink', { skip: !constants.O_NOFOLLOW }, async () => {
   const path = file('changing.json'), source = file('link-source.json');
   atomicPrivateJson(path, {});
   atomicPrivateJson(source, {});
@@ -118,17 +118,18 @@ test('private open retries are bounded and never accept an injected symlink', { 
     syncBuiltinESMExports();
     const {readPrivateJson}=await import(${JSON.stringify(MODULE)});
     const codes=[];
-    try{readPrivateJson(${JSON.stringify(path)})}catch(e){codes.push(e.code)}
+    const value=readPrivateJson(${JSON.stringify(path)});
     const boundedOpens=opens;
     attack=true;
     try{readPrivateJson(${JSON.stringify(path)})}catch(e){codes.push(e.code)}
-    process.stdout.write(JSON.stringify({codes,boundedOpens,opens}));`);
+    process.stdout.write(JSON.stringify({value,codes,boundedOpens,opens}));`);
   const result = await fixture.ended;
   assert.equal(result.code, 0, result.stderr);
   const output = JSON.parse(result.stdout);
-  assert.equal(output.boundedOpens, 5);
-  assert.equal(output.opens, 6);
-  assert.deepEqual(output.codes, ['PRIVATE_FILE', 'STORE_READ']);
+  assert.deepEqual(output.value, {});
+  assert.equal(output.boundedOpens, 1);
+  assert.equal(output.opens, 2);
+  assert.deepEqual(output.codes, ['STORE_READ']);
 });
 
 test('private reads reject exposed files, symlinks, hardlinks, and directories', { skip: !posix }, () => {

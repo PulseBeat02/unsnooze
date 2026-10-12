@@ -98,6 +98,7 @@ test('oversized bodies are capped well under the 4K push limit', async () => {
 });
 
 test('notify() fires ntfy ADDITIVELY alongside the local channel', async () => {
+  process.env.UNSNOOZE_NOTIFICATIONS = 'on';
   process.env.UNSNOOZE_NTFY_TOPIC = 'topic';
   const fetcher = fakeFetch();
   const spawns = [];

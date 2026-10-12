@@ -238,8 +238,9 @@ async function main() {
       return mod.cmdAskpass(rest);
     }
     case 'update': {
-      const { runSelfUpdate } = await import('../src/update-check.js');
-      return runSelfUpdate();
+      const { fileURLToPath } = await import('node:url');
+      const result = spawnSync('bash', [fileURLToPath(new URL('./unsnooze-update', import.meta.url))], { stdio: 'inherit' });
+      return result.status ?? 1;
     }
     case '_update-check': {
       const mod = await safeImport('../src/update-check.js');
@@ -248,8 +249,8 @@ async function main() {
     }
     case 'daemon': {
       if (process.env.UNSNOOZE_LEGACY_DAEMON !== '1') {
-        const { hasAccounts } = await import('../src/accounts/config.js');
-        if (rest.length || hasAccounts()) {
+        const accountConfig = await safeImport('../src/accounts/config.js');
+        if (accountConfig && (rest.length || accountConfig.hasAccounts())) {
           const { cmdAccountDaemon } = await import('../src/accounts/daemon.js');
           return cmdAccountDaemon(rest.length ? rest : ['ensure']);
         }

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.20.1-pulse.1 — 2026-10-12
+
+- Configurable Claude, Codex and Antigravity accounts with private credential references,
+  imports, switching policies, pinning, and exact provider usage in JSON and the dashboard.
+- Supervised loopback routing, single-owner token refresh, live quota checks before
+  resuming saved conversations, and crash-safe account state.
+- Notifications and registry update checks are opt-in. Fork updater verifies tests
+  and lint before installing. Upstream agents and multiplexer integrations are retained.
+
 ## 1.20.1 — 2026-10-08
 
 `unsnooze help` lists the usage flags in the right place again, and the docs'

@@ -30,27 +30,25 @@ function privateInode(st) {
     || ((st.mode & 0o077) === 0 && (typeof process.getuid !== 'function' || st.uid === process.getuid())));
 }
 
-const privateStat = st => privateInode(st) && st.nlink === 1;
+const privateSnapshot = st => privateInode(st) && (st.nlink === 0 || st.nlink === 1);
 
 // lstat + O_NOFOLLOW + fstat covers both links present at entry and paths
-// swapped while opening. The inode comparison also protects platforms where
-// O_NOFOLLOW is unavailable. O_NONBLOCK avoids hanging on an injected FIFO.
+// swapped while opening. An opened private inode remains a coherent snapshot
+// after atomic replacement unlinks it; chasing the newest generation can starve
+// readers indefinitely. The inode comparison protects platforms without
+// O_NOFOLLOW. O_NONBLOCK avoids hanging on an injected FIFO.
 function openPrivate(path) {
   for (let attempt = 0; attempt < 5; attempt++) {
     let fd;
     try {
       const before = lstatSync(path);
-      if (!privateStat(before)) throw new PrivateStoreError('PRIVATE_FILE');
+      if (!privateSnapshot(before)) throw new PrivateStoreError('PRIVATE_FILE');
       fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
       const actual = fstatSync(fd);
-      if (!privateInode(actual) || (actual.nlink !== 0 && actual.nlink !== 1)) throw new PrivateStoreError('PRIVATE_FILE');
-      if (actual.nlink === 0 || before.dev !== actual.dev || before.ino !== actual.ino) {
-        // A concurrent atomic writer may legitimately replace a private file
-        // between lstat and open. Retry the complete protected open rather
-        // than accepting either inode on faith. It may also unlink the old
-        // inode after open but before fstat; reopen rather than reading it.
-        // A busy/malicious swap loop is
-        // bounded, and links/nonprivate files still fail immediately.
+      if (!privateSnapshot(actual)) throw new PrivateStoreError('PRIVATE_FILE');
+      if (!constants.O_NOFOLLOW && (before.dev !== actual.dev || before.ino !== actual.ino)) {
+        // Without no-follow support require the same independently verified
+        // inode on both sides of open, with a bounded retry for replacements.
         closeSync(fd);
         fd = undefined;
         if (attempt < 4) continue;
@@ -65,6 +63,7 @@ function openPrivate(path) {
       throw new PrivateStoreError('STORE_READ');
     }
   }
+  throw new PrivateStoreError('PRIVATE_FILE');
 }
 
 export function assertPrivateFile(path) {

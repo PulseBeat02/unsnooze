@@ -40,12 +40,13 @@ export function writeCache(patch) {
   return merged;
 }
 
-// Plain x.y.z compare. We never publish prereleases; anything that isn't
-// three numbers loses (a garbage registry response must never nag).
+// Registry candidates must remain stable releases. The installed fork carries
+// a -pulse.N suffix; compare its upstream base without treating the same base
+// release as an upgrade back to upstream.
 export function isNewer(candidate, current) {
   const parse = v => (typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v)) ? v.split('.').map(Number) : null;
   const a = parse(candidate);
-  const b = parse(current);
+  const b = parse(typeof current === 'string' ? current.replace(/-pulse\.\d+$/, '') : current);
   if (!a || !b) return false;
   for (let i = 0; i < 3; i++) {
     if (a[i] !== b[i]) return a[i] > b[i];
@@ -69,7 +70,7 @@ export function isCacheStale(now = Date.now()) {
 export function hasVersionSkew({ root = ROOT, current = PKG_VERSION } = {}) {
   try {
     const disk = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8')).version;
-    return typeof disk === 'string' && /^\d+\.\d+\.\d+$/.test(disk) && disk !== current;
+    return typeof disk === 'string' && /^\d+\.\d+\.\d+(?:-pulse\.\d+)?$/.test(disk) && disk !== current;
   } catch {
     return false;
   }

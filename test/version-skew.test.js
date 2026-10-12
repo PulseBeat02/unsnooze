@@ -28,6 +28,7 @@ test('no skew when disk version matches the loaded version', () => {
 test('skew when the on-disk package is any different version', () => {
   assert.equal(hasVersionSkew({ root: writePkg('999.0.0') }), true);
   assert.equal(hasVersionSkew({ root: writePkg('0.0.1') }), true);
+  assert.equal(hasVersionSkew({ root: writePkg('1.20.1-pulse.2'), current: '1.20.1-pulse.1' }), true);
 });
 
 test('missing or unreadable package.json is NOT skew (mid-upgrade window)', () => {
