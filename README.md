@@ -28,6 +28,88 @@ npm install -g unsnooze && unsnooze setup
 
 </div>
 
+## PulseBeat02 account-management fork
+
+This fork adds configurable Claude, Codex and Antigravity accounts, measured
+provider usage, and a supervised local router. Upstream history and the MIT
+license are retained. Install this fork from its checkout, **not the upstream
+npm release**:
+
+```sh
+git clone git@github.com:PulseBeat02/unsnooze.git
+cd unsnooze
+npm ci && npm test && npm run lint
+npm install -g .
+unsnooze accounts import all
+unsnooze accounts list --json
+unsnooze usage --json --refresh
+unsnooze daemon ensure
+```
+
+`~/.unsnooze/accounts.json` contains account names, enabled flags, priority,
+credential file references and a policy for each provider. Files holding
+credentials and account state must be owner-only (`0600`); credentials are
+never printed by these commands. Existing claude-rotate, codex-multi-auth and
+Antigravity imports reference their files and do not refresh or copy their
+tokens. Disable old refresh owners before transferring a Codex credential to
+unsnooze's managed store; two independent clients must never share a refresh
+token. The managed store durably records refresh intent before exchanging a
+single-use token. An uncertain exchange requires login instead of unsafe reuse.
+
+```sh
+unsnooze accounts add claude Work --path /private/work.token
+unsnooze accounts disable claude Work
+unsnooze accounts enable claude Work
+unsnooze accounts switch claude Work
+unsnooze accounts pin claude Work
+unsnooze accounts unpin claude
+unsnooze accounts policy codex --threshold-percent 95 --strategy headroom
+unsnooze accounts policy codex --on-limit true --cooldown-ms 60000 --never-switch false
+```
+
+Selection prefers fresh measured headroom, then priority and configured order.
+A threshold starts a switch when a better account is available; it does not
+discard remaining quota. Pins and `neverSwitch` keep the selected account.
+Expired login, unknown usage and network errors stay distinct from exhaustion.
+Quota reset times never establish that an account has recovered: a successful
+live check is required before clearing a local block or waking a managed session.
+
+`unsnooze usage --json` adds a `providers` map with per-account `status`,
+`fetchedAt`, `stale` and windows containing exact **used** percentages and epoch
+millisecond reset times. Window names follow the provider; a Pro Lite primary
+window can be weekly. The existing Usage dashboard displays these observations.
+Claude uses its OAuth usage endpoint where authorized, or headers captured from
+real requests. `unsnooze usage --json --probe` explicitly permits a one-token
+Claude header probe. Routing can make that probe on demand when no fresh
+observation exists; background polling alone never burns model tokens.
+Antigravity uses `loadCodeAssist` followed by `retrieveUserQuotaSummary`, with
+its native token and the required `User-Agent: antigravity`. An expired native
+token needs Antigravity itself to refresh it; no OAuth client secret is extracted.
+
+Claude and Codex route through an authenticated loopback server, changing
+credentials only between requests. Full request payloads and conversation IDs
+are preserved. Rejected requests may switch accounts; partially delivered
+streams are never replayed. Incremental `previous_response_id` chains require
+the CLI to resume its saved conversation instead of silently discarding context.
+Codex uses HTTP streaming; the managed configuration disables WebSockets.
+Antigravity uses serialized native credential handoff and `--conversation <id>`
+at an observed limit stop. Its native CLI is the only refresh owner. Concurrent
+native Antigravity launches cannot safely own the same credential slot; an
+additional launch waits for the slot and fails safely if it remains busy.
+
+The wrappers start routing when absent. `unsnooze daemon ensure` is idempotent
+and succeeds only after an authenticated health check. A supervisor restarts
+the router and existing transcript watcher/resumer, with PID birth identities,
+heartbeats, bounded backoff and crash-safe state. `unsnooze daemon status`
+inspects it; `unsnooze daemon stop` stops it. The default loopback port is 18484
+(`UNSNOOZE_ROUTER_PORT` overrides it). No cron script is required for internal
+recovery. An optional host heartbeat can run `unsnooze daemon ensure` after a
+whole-process or host restart. Notifications and registry updates default off.
+
+`bin/unsnooze-update` pulls only the owner's `origin/main` with fast-forward
+history, runs a clean dependency install, tests and lint, then installs globally
+only after those checks pass. A dirty checkout or unexpected remote stops it.
+
 ## Why unsnooze
 
 Overnight and long-running agent work dies at the 5-hour / weekly limit, and every

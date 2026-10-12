@@ -14,7 +14,7 @@ after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDel
 test('defaults apply when no config file exists', () => {
   assert.equal(getConfig('autoResume'), true);
   assert.equal(getConfig('menuAutoAnswer'), true);
-  assert.equal(getConfig('notifications'), true);
+  assert.equal(getConfig('notifications'), false);
   assert.equal(getConfig('notifyChannel'), 'auto');
   assert.equal(getConfig('agents.claude'), true);
   assert.equal(getConfig('agents.grok'), false);

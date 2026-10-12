@@ -53,7 +53,8 @@ const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'confi
 
 // Every named subcommand; anything else (or no args) is an agent launch.
 const NAMED_COMMANDS = new Set([
-  ...USER_FACING, 'setup', 'install', 'uninstall', 'update', 'daemon',
+  ...USER_FACING, 'setup', 'install', 'uninstall', 'update', 'daemon', 'accounts', '--version', '-V',
+  '_account-supervisor', '_account-worker',
   '_hook-stopfailure', '_monitor', '_run', '_resumer', '_update-check', '_remote', '_askpass',
 ]);
 const isLaunchPath = cmd === '_run' || cmd === undefined || !NAMED_COMMANDS.has(cmd);
@@ -99,6 +100,24 @@ async function maybeUpdateNotices() {
 
 async function main() {
   switch (cmd) {
+    case '--version':
+    case '-V': {
+      const { readFileSync } = await import('node:fs');
+      console.log(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version);
+      return 0;
+    }
+    case 'accounts': {
+      const { cmdAccounts } = await import('../src/accounts/cli.js');
+      return cmdAccounts(rest);
+    }
+    case '_account-supervisor': {
+      const { runAccountSupervisor } = await import('../src/accounts/daemon.js');
+      return runAccountSupervisor();
+    }
+    case '_account-worker': {
+      const { runAccountWorker } = await import('../src/accounts/daemon.js');
+      return runAccountWorker();
+    }
     case 'status': {
       const { cmdStatus } = await import('../src/cli.js');
       return cmdStatus(rest);
@@ -196,6 +215,9 @@ async function main() {
     }
     case '_run': {
       if (!rest[0]) { console.error('unsnooze _run: agent id required'); return 2; }
+      const managedMod = await safeImport('../src/accounts/launch.js');
+      const managed = managedMod ? await managedMod.runAccountLaunch(rest[0], rest.slice(1)) : null;
+      if (managed !== null) return managed;
       const mod = await safeImport('../src/launcher.js');
       if (!mod) return runAgentFallback(rest[0], rest.slice(1));
       return mod.runLauncher(rest.slice(1), rest[0]);
@@ -225,6 +247,13 @@ async function main() {
       return mod.runUpdateCheck();
     }
     case 'daemon': {
+      if (process.env.UNSNOOZE_LEGACY_DAEMON !== '1') {
+        const { hasAccounts } = await import('../src/accounts/config.js');
+        if (rest.length || hasAccounts()) {
+          const { cmdAccountDaemon } = await import('../src/accounts/daemon.js');
+          return cmdAccountDaemon(rest.length ? rest : ['ensure']);
+        }
+      }
       // Persistent resumer + transcript watcher: detects and revives limit
       // stops from GUI surfaces (VS Code extension, desktop apps) where no
       // shell wrapper or multiplexer pane exists. Run via launchd/systemd, on
@@ -240,6 +269,10 @@ async function main() {
       const controller = new AbortController();
       process.on('SIGTERM', () => controller.abort());
       process.on('SIGINT', () => controller.abort());
+      if (process.env.UNSNOOZE_ACCOUNT_CHILD === '1') {
+        process.on('disconnect', () => controller.abort());
+        process.on('message', message => { if (message?.type === 'unsnooze-stop') controller.abort(); });
+      }
       // Native Windows has no launchd/systemd to keep this a single instance,
       // and the wrappers and the hook can both start one at once. Claim the
       // pidfile before doing anything else: a daemon that finds a live one
@@ -268,7 +301,7 @@ async function main() {
         // supervisor restarts us under the fixed unit. One-time: healed units
         // pass the check forever after.
         const installMod = await safeImport('../src/install.js');
-        if (installMod?.healDaemonAutostart) {
+        if (installMod?.healDaemonAutostart && process.env.UNSNOOZE_ACCOUNT_CHILD !== '1') {
           try {
             const healed = installMod.healDaemonAutostart();
             if (healed) {
@@ -322,8 +355,10 @@ async function main() {
         // Daily update check from the daemon: GUI-only users never run CLI
         // commands, so this is what gets them the "new version" desktop toast.
         const { spawnDetached } = spawnMod;
-        spawnDetached(['_update-check']);
-        setInterval(() => spawnDetached(['_update-check']), 24 * 3_600_000).unref();
+        if (process.env.UNSNOOZE_ACCOUNT_CHILD !== '1') {
+          spawnDetached(['_update-check']);
+          setInterval(() => spawnDetached(['_update-check']), 24 * 3_600_000).unref();
+        }
         return await runResumer({ persistent: true, watcher: createWatcher(), signal: controller.signal });
       } finally {
         releaseDaemon?.();
@@ -336,6 +371,9 @@ async function main() {
       console.log(`unsnooze — wakes every limit-stopped AI coding session when the limit resets
 
 Usage:
+  unsnooze accounts <command>     import, add, list, enable, disable, switch, pin, unpin, policy
+  unsnooze daemon ensure          start/check supervised routing and quota recovery
+  unsnooze daemon status|stop     inspect or stop the managed daemon
   unsnooze [claude args...]        run claude under limit-watch (default)
   unsnooze _run <agent> [args...]  run a specific agent CLI under limit-watch
   unsnooze status                  list tracked sessions + reset countdowns
@@ -397,6 +435,9 @@ Usage:
       // Everything else (including no args, --resume, -c, plain prompts) is a
       // claude invocation — back-compat for the plain wrapper.
       const args = cmd === undefined ? [] : [cmd, ...rest];
+      const managedMod = await safeImport('../src/accounts/launch.js');
+      const managed = managedMod ? await managedMod.runAccountLaunch('claude', args) : null;
+      if (managed !== null) return managed;
       const mod = await safeImport('../src/launcher.js');
       if (!mod) return runAgentFallback('claude', args);
       return mod.runLauncher(args, 'claude');

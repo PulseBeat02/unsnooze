@@ -33,6 +33,7 @@ import { makeLogger } from './logger.js';
 import { createLeaseId, leaseMatches, paneOwnedByRecord } from './lease.js';
 import { autoReapIfEnabled, attachHint } from './reap.js';
 import { tickUsageWarnings } from './usage.js';
+import { accountResumeGate } from './accounts/gate.js';
 
 const log = makeLogger('resumer');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -615,6 +616,7 @@ export async function dispatchOne(rec, {
   mux = resolveRecordMux(rec), resolveMux = null,
   resumeMessage, selfCmd = selfCommand(), fingerprint = workspaceFingerprint,
   notifier = notify, matchesLease = leaseMatches, contextTokens = null,
+  accountGate = accountResumeGate,
 } = {}) {
   resolveMux ||= () => mux;
   const key = rec.key;
@@ -622,6 +624,10 @@ export async function dispatchOne(rec, {
   // Cheap early reconciliation; this is repeated after asynchronous pane or
   // multiplexer inspection, immediately before any keystroke/window launch.
   if (finishIfClaudeProgressed(rec, agent)) return 'already-resumed';
+  // A provider reset timestamp is a prediction, not evidence of quota. In
+  // managed mode even manual wakes require a successful live account check.
+  const readiness = await accountGate(rec);
+  if (!readiness.ready) return 'held';
   // Wake-message precedence: per-session (`unsnooze message <id> "..."`) →
   // explicit option → per-agent (`resumeMessages.<id>`) → global. Applies to
   // both the live-pane sendText and the argv reopen path.

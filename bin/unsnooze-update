@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Verified fork updater; never install from the upstream npm tag.
+set -euo pipefail
+task_repo="${UNSNOOZE_FORK_REPO:-$HOME/projects/unsnooze}"
+cd "$task_repo"
+exec 9> .git/unsnooze-update.lock
+flock -n 9 || exit 0
+test "$(git branch --show-current)" = main
+test -z "$(git status --porcelain)"
+case "$(git remote get-url origin)" in
+  git@github.com:PulseBeat02/unsnooze.git|https://github.com/PulseBeat02/unsnooze.git) ;;
+  *) printf '%s\n' 'Refusing update: origin is not the configured owner fork.' >&2; exit 1 ;;
+esac
+git pull --ff-only origin main
+npm ci --no-audit --no-fund
+npm test
+npm run lint
+npm install -g . --no-audit --no-fund
+unsnooze --version
+unsnooze daemon ensure

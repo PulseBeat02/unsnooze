@@ -61,8 +61,10 @@ function runPassthrough(agent, args) {
 
 export function runLauncher(args, agentId = 'claude', {
   processBirthFn = processBirth, ensureDaemonFn = ensureDaemon,
+  onChild = null,
+  binOverride = null,
 } = {}) {
-  const agent = getAgent(agentId);
+  const agent = binOverride ? { ...getAgent(agentId), bin: binOverride } : getAgent(agentId);
 
   // Recursion / nested-launch guard: inside an unsnooze-managed session, a
   // plain `claude`/`codex`/`unsnooze` call goes straight through. Same for an
@@ -212,6 +214,7 @@ export function runLauncher(args, agentId = 'claude', {
   // agent is alive; ownership checks stay exactly as strict, because
   // leaseMatches() still refuses to match a lease with a null birth.
   if (lease) writeLease(lease);
+  onChild?.(child, lease);
   const cleanup = () => { if (lease) removeLease(lease, leaseId); };
   return new Promise(resolve => {
     child.on('exit', code => { cleanup(); resolve(code ?? 1); });

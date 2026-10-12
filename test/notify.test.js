@@ -1,4 +1,4 @@
-import { test, after } from 'node:test';
+import { test, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -6,6 +6,8 @@ import { join } from 'node:path';
 
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-notify-test-'));
 process.env.UNSNOOZE_STATE_DIR = DIR;
+// Notifications are opt-in in this fork. These tests exercise enabled channels.
+beforeEach(() => { process.env.UNSNOOZE_NOTIFICATIONS = 'on'; });
 
 const { notify } = await import('../src/notify.js');
 

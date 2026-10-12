@@ -1,7 +1,7 @@
 {
   "name": "unsnooze",
-  "version": "1.20.1",
-  "description": "Automatically resume Claude Code, Codex CLI, Grok, Qwen Code, Kimi CLI, OpenCode, Antigravity, and Cursor CLI sessions when 5-hour or weekly usage limits reset—on macOS, Linux and Windows, with or without a terminal multiplexer.",
+  "version": "1.20.1-pulse.1",
+  "description": "Automatically resume Claude Code, Codex CLI, Grok, Qwen Code, Kimi CLI, OpenCode, Antigravity, and Cursor CLI sessions when 5-hour or weekly usage limits reset\u2014on macOS, Linux and Windows, with or without a terminal multiplexer.",
   "keywords": [
     "claude",
     "claude-code",
@@ -55,10 +55,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/saaranshM/unsnooze.git"
+    "url": "git+https://github.com/PulseBeat02/unsnooze.git"
   },
   "bugs": {
-    "url": "https://github.com/saaranshM/unsnooze/issues"
+    "url": "https://github.com/PulseBeat02/unsnooze/issues"
   },
   "homepage": "https://unsnooze.dev",
   "type": "module",
@@ -73,7 +73,8 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "lint": "node scripts/lint.js"
   },
   "engines": {
     "node": ">=20.12"

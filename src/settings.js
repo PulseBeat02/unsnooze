@@ -16,7 +16,7 @@ export const DEFAULTS = {
   multiplexer: 'auto',    // auto | tmux | zellij | herdr | cmux
   autoResume: true,        // master switch: dispatch resumes when limits reset
   menuAutoAnswer: true,    // may unsnooze drive Claude's limit menu (send keys)?
-  notifications: true,     // desktop notifications on detect/resume
+  notifications: false,    // opt in to desktop notifications on detect/resume
   notifyChannel: 'auto',   // auto | native | osc | bell
   // ntfy push (https://ntfy.sh) — ADDITIVE to notifyChannel; off until a
   // topic is set. ntfy.sh topics are public: the name is the password —
@@ -27,7 +27,7 @@ export const DEFAULTS = {
   ntfyToken: '',           // optional Bearer token (tk_…) for authed servers
   ntfyPrivacy: 'full',     // full | terse (terse: never push cwd paths)
   guiWatch: true,          // daemon watches transcripts/rollouts for GUI-session stops
-  updateCheck: true,       // daily registry version check + update notices/toast
+  updateCheck: false,      // fork updates are verified from the owner's Git remote
   workspaceGuard: 'inform', // repo changed while stopped: off | inform | pause
   contextGuard: 'inform',   // wake re-reads a big cold context: off | inform | pause
   contextGuardTokens: 100_000, // contextGuard notify/hold threshold (tokens)
