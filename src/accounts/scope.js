@@ -25,6 +25,7 @@ export function scopeUsage(provider, entry, model, { now = Date.now() } = {}) {
     ? windows.length ? windows.some(w => w.usedPercent >= 100) ? 'quota_exhausted' : 'ok' : 'unknown'
     : entry.status;
   return { ...entry, windows, status, fetchedAt,
-    stale: !Number.isFinite(fetchedAt) || now - fetchedAt > 60000 || fetchedAt > now
+    stale: !Number.isFinite(fetchedAt) || now - fetchedAt >= 60000 || fetchedAt > now
+      || windows.some(w => w.resetAt != null && w.resetAt <= now)
       || !['ok', 'quota_exhausted'].includes(status) };
 }

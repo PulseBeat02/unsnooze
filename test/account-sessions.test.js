@@ -65,4 +65,8 @@ test('model scopes preserve global limits while excluding unrelated model pools'
   assert.equal(scopeUsage('codex', { ...entry, windows: [{ id: 'review', group: 'Code review', usedPercent: 100 },
     { id: 'global', usedPercent: 1 }] }, 'gpt-6-astra', { now }).status, 'ok');
   assert.equal(scopeUsage('agy', { ...agy, status: 'expired_login' }, 'claude', { now }).status, 'expired_login');
+  const rolledWindow = scopeUsage('claude', { ...entry, status: 'ok', windows: [
+    { id: 'global', usedPercent: 10, fetchedAt: now, resetAt: now - 1 },
+  ] }, 'sonnet', { now });
+  assert.equal(rolledWindow.stale, true, 'the model filter cannot restore a quota observation past its reset');
 });

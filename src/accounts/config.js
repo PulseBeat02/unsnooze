@@ -7,7 +7,7 @@ export const DEFAULT_POLICY = Object.freeze({
   thresholdPercent: 95, onLimit: true, strategy: 'headroom', cooldownMs: 60_000, neverSwitch: false,
 });
 export const ACCOUNT_USAGE_MAX_AGE_MS = 60_000;
-const CREDENTIAL_TYPES = { claude: ['claude-token', 'managed'], codex: ['codex-multi-auth', 'managed'], agy: ['agy-token', 'managed'] };
+const CREDENTIAL_TYPES = { claude: ['claude-token', 'managed'], codex: ['codex-multi-auth', 'managed'], agy: ['agy-token'] };
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const onlyKeys = (v, keys) => object(v) && Object.keys(v).every(k => keys.includes(k));
 

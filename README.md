@@ -40,7 +40,7 @@ git clone git@github.com:PulseBeat02/unsnooze.git
 cd unsnooze
 npm ci && npm test && npm run lint
 npm pack
-npm install -g ./unsnooze-1.20.1-pulse.1.tgz
+npm install -g ./unsnooze-1.20.1-pulse.2.tgz
 unsnooze accounts import all
 unsnooze accounts list --json
 unsnooze usage --json --refresh
@@ -95,7 +95,9 @@ account affinity. A managed CLI restarts its exact saved conversation when the
 chain needs another account; an unmanaged API client receives `session_resume_required`.
 Codex uses HTTP streaming; the managed configuration disables WebSockets.
 Antigravity uses serialized native credential handoff and `--conversation <id>`
-at an observed limit stop. Its native CLI is the only refresh owner. Concurrent
+at an observed limit stop, or after the policy threshold when its owned pane has
+a stable empty composer and a known conversation. A draft, busy session or
+ambiguous history delays threshold handoff. Its native CLI is the only refresh owner. Concurrent
 native Antigravity launches cannot safely own the same credential slot; an
 additional launch waits for the slot and fails safely if it remains busy.
 

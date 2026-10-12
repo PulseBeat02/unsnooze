@@ -148,8 +148,8 @@ export async function startAccountProxy({ stateDir = STATE_DIR, host = '127.0.0.
         const selected = await selectFn(route.provider, { stateDir, exclude, refresh: attempt > 0,
           reason: lastFailure === 'quota_exhausted' ? 'limit' : 'request', model: payload?.model });
         if (!selected.account) {
-          const expired = lastFailure === 'expired_login' || /expired|auth|login/.test(selected.reason || '');
-          const quota = lastFailure === 'quota_exhausted' || /exhaust|limit/.test(selected.reason || '');
+          const expired = selected.status === 'expired_login' || lastFailure === 'expired_login' || /expired|auth|login/.test(selected.reason || '');
+          const quota = selected.status === 'quota_exhausted' || lastFailure === 'quota_exhausted' || /exhaust|limit/.test(selected.reason || '');
           return reply(res, expired ? 401 : quota ? 429 : 503,
             expired ? 'authentication_error' : quota ? 'usage_limit_reached' : 'provider_unavailable',
             expired ? 'Account login expired. Sign in again.' : quota
@@ -183,7 +183,7 @@ export async function startAccountProxy({ stateDir = STATE_DIR, host = '127.0.0.
           if (upstream.status === 429) {
             const errorBody = await upstream.text();
             if (!isQuotaRejection(route.provider, upstream.headers, errorBody)) {
-              return reply(res, 429, 'rate_limit_error', 'Server is temporarily limiting requests (not your usage limit).',
+              return reply(res, 429, 'rate_limit_error', 'Server is temporarily busy. Retry shortly.',
                 rateReset(upstream.headers, Date.now()));
             }
           }

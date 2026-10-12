@@ -169,6 +169,7 @@ test('latestSessionId falls back to latest id when history entries have no times
     JSON.stringify({ conversation_id: 'conv-new', cwd: '/tmp/proj-agy' }),
   ].join('\n') + '\n');
   assert.equal(latestSessionId('/tmp/proj-agy', now, DIR), 'conv-new');
+  assert.equal(latestSessionId('/tmp/proj-agy', now, DIR, { requireTimestamp: true, since: now - 1000 }), null);
 });
 
 test('resetPatterns does not match arbitrary lines containing "reset" (e.g. git reset)', () => {

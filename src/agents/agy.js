@@ -81,7 +81,7 @@ function tailBytes(path, bytes = 64 * 1024) {
   }
 }
 
-export function latestSessionId(cwd, aroundTs = null, agyDir = AGY_DIR()) {
+export function latestSessionId(cwd, aroundTs = null, agyDir = AGY_DIR(), { requireTimestamp = false, since = null } = {}) {
   const text = tailBytes(join(agyDir, 'history.jsonl'));
   if (!text) return null;
   const lines = text.split('\n').filter(l => l.trim());
@@ -95,10 +95,12 @@ export function latestSessionId(cwd, aroundTs = null, agyDir = AGY_DIR()) {
     if (!Object.values(entry).some(v => v === cwd)) continue;
     const id = entry.conversation_id ?? entry.conversationId ?? entry.id;
     if (typeof id !== 'string' || !id) continue;
-    latestId ||= id;
     const timestamp = typeof entry.timestamp === 'number'
       ? entry.timestamp
       : typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
+    if ((requireTimestamp && !Number.isFinite(timestamp))
+      || (Number.isFinite(since) && (!Number.isFinite(timestamp) || timestamp < since))) continue;
+    latestId ||= id;
     if (Number.isFinite(timestamp)) {
       hasTimestamp = true;
       if (Number.isFinite(aroundTs) && Math.abs(aroundTs - timestamp) <= SESSION_RECENCY_MS) {

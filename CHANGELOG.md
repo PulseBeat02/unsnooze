@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.20.1-pulse.2 — 2026-10-12
+
+- Parse Antigravity's live grouped quota buckets with exact remaining fractions.
+- Resume an identified idle Antigravity conversation at the switching threshold;
+  leave busy sessions and unsubmitted drafts alone. Native OAuth refresh remains serialized.
+- Keep a concurrent session's healthy replacement eligible after a delayed quota
+  rejection, and retain the cause of a pinned-account hold.
+
 ## 1.20.1-pulse.1 — 2026-10-12
 
 - Configurable Claude, Codex and Antigravity accounts with private credential references,

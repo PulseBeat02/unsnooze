@@ -4,9 +4,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { runManagedAgy, recoverAgySlot, agyOwnerAlive } from '../src/accounts/agy.js';
+import { runManagedAgy, recoverAgySlot, agyOwnerAlive, agyIdleConversation } from '../src/accounts/agy.js';
 import { atomicPrivateJson, readPrivateJson } from '../src/accounts/store.js';
-import { emptyAccounts, saveAccounts } from '../src/accounts/config.js';
+import { emptyAccounts, saveAccounts, readAccounts } from '../src/accounts/config.js';
 
 const root = mkdtempSync(join(tmpdir(), 'unsnooze-native-agy-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -81,4 +81,60 @@ test('unpublished child is detected by durable nonce; PID recycling is not owner
   assert.equal(agyOwnerAlive({ ...journal, child: { pid: 12, pidBirth: 'old' } }, {
     ...options, birthFn: () => 'recycled', readFile: path => path.endsWith('/stat') ? '12 (other) S 0' : 'other=1',
   }), false);
+});
+
+test('a sole imported expired account can let its native CLI refresh without OAuth extraction', async () => {
+  const f = setup();
+  const config = readAccounts(f.dir);
+  config.providers.agy.accounts = [f.accounts[0]];
+  config.providers.agy.activeAccountId = null;
+  saveAccounts(config, f.dir);
+  atomicPrivateJson(f.accounts[0].credential.path, { token: { access_token: 'expired', expiry: Date.now() - 1000 } });
+  let calls = 0;
+  assert.equal(await runManagedAgy([], { stateDir: f.dir, nativePath: f.nativePath,
+    selectFn: async () => ({ account: null, reason: 'no_available_account' }), ownerAliveFn: () => false,
+    launchFn: async () => {
+      calls++; assert.equal(readPrivateJson(f.nativePath).token.access_token, 'expired');
+      atomicPrivateJson(f.nativePath, { token: { access_token: 'native-refreshed', expiry: Date.now() + 3600000 } });
+      return 0;
+    }, readStateFn: () => ({ sessions: {} }), updateStateFn: () => {},
+  }), 0);
+  assert.equal(calls, 1);
+  assert.equal(readAccounts(f.dir).providers.agy.activeAccountId, 'a');
+  assert.equal(readPrivateJson(f.accounts[0].credential.path).token.access_token, 'native-refreshed');
+});
+
+test('idle threshold handoff waits for a stable composer then resumes the same conversation', async () => {
+  const f = setup(); let choices = 0, idles = 0; const calls = [];
+  const result = await runManagedAgy(['--conversation', 'threshold-session'], {
+    stateDir: f.dir, nativePath: f.nativePath, intervalMs: 5, ownerAliveFn: () => false,
+    selectFn: async () => ({ account: f.accounts[choices++ ? 1 : 0] }),
+    idleFn: async () => { idles++; return { sessionId: 'threshold-session', signature: 'stable-empty-composer' }; },
+    readStateFn: () => ({ sessions: {} }), updateStateFn: () => {},
+    launchFn: async (args, provider, options) => {
+      calls.push(args);
+      if (calls.length > 1) return 0;
+      return new Promise(resolve => {
+        const keepAlive = setInterval(() => {}, 100);
+        options.onChild({ kill: () => { clearInterval(keepAlive); resolve(1); } }, { leaseId: 'native-threshold' });
+      });
+    },
+  });
+  assert.equal(result, 0); assert.equal(calls.length, 2); assert.ok(idles >= 3);
+  assert.ok(calls[1].includes('threshold-session'));
+  assert.equal(readPrivateJson(f.nativePath).token.access_token, 'b');
+});
+
+test('threshold readiness rejects busy, draft, unowned and unidentified panes', async () => {
+  const lease = { pane: '%1', mux: 'tmux' };
+  const options = { matchesLease: async () => true, ownsPane: async () => true,
+    latestSessionId: () => 'identified-session', mux: { capturePaneVisible: async () => 'Answer\n❯ ' } };
+  assert.equal((await agyIdleConversation(lease, options)).sessionId, 'identified-session');
+  for (const text of ['Answer\n❯ unfinished draft', '>\nAnswer\n❯ unfinished draft', 'esc to interrupt\n❯ ', 'unknown screen']) {
+    assert.equal(await agyIdleConversation(lease, { ...options, mux: { capturePaneVisible: async () => text } }), null);
+  }
+  assert.equal(await agyIdleConversation(lease, { ...options, ownsPane: async () => false }), null);
+  assert.equal(await agyIdleConversation(lease, { ...options, matchesLease: async () => false }), null);
+  assert.equal(await agyIdleConversation(lease, { ...options, latestSessionId: () => null }), null);
+  assert.equal(await agyIdleConversation({ pane: null }, options), null);
 });

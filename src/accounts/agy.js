@@ -3,13 +3,17 @@
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { STATE_DIR } from '../config.js';
 import { readAccounts, mutateAccounts } from './config.js';
 import { readPrivateJson, atomicPrivateJson, withStoreLock } from './store.js';
 import { readCredential } from './credentials.js';
 import { selectRoutingAccount } from './routing.js';
 import { accountProcessBirth } from './daemon.js';
+import agyAgent from '../agents/agy.js';
+import { isBusy, stripAnsi } from '../patterns.js';
+import { leaseMatches, paneOwnedByRecord } from '../lease.js';
+import { getMultiplexer } from '../multiplexer.js';
 
 export function agyResumeArgs(sessionId) {
   if (typeof sessionId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(sessionId)) {
@@ -83,10 +87,32 @@ function option(args, name) {
   return index >= 0 ? args[index + 1] : args.find(a => a.startsWith(`${name}=`))?.slice(name.length + 1);
 }
 
+// Threshold handoff may only interrupt a stable empty composer belonging to
+// this native child. A busy pane, an unsubmitted draft, or ambiguous identity
+// keeps the current session running. Never infer an arbitrary latest session.
+export async function agyIdleConversation(lease, { sessionId, cwd = process.cwd(), startedAt = Date.now(), now = Date.now(),
+  mux = lease?.pane ? getMultiplexer(lease.mux, { owner: lease.paneOwner }) : null,
+  matchesLease = leaseMatches, ownsPane = paneOwnedByRecord,
+  latestSessionId = (directory, at) => agyAgent.latestSessionId(directory, at, undefined, { requireTimestamp: true, since: startedAt }),
+} = {}) {
+  if (!lease?.pane || !mux || !await matchesLease(lease, { mux })
+    || !await ownsPane(lease, { mux, matchesLease })) return null;
+  const text = await (mux.capturePaneVisible
+    ? mux.capturePaneVisible(lease.pane) : mux.capturePane(lease.pane, 12));
+  if (isBusy(text, agyAgent.patterns.busyPatterns)) return null;
+  const lines = stripAnsi(text).trimEnd().split('\n').slice(-6);
+  const composer = lines.findLast(line => /^\s*[›❯>]/.test(line));
+  if (!composer || !/^\s*[›❯>]\s*$/.test(composer)) return null;
+  const id = sessionId || latestSessionId(cwd, now);
+  if (!id) return null;
+  agyResumeArgs(id); // same strict identifier validation as the actual resume
+  return { sessionId: id, signature: createHash('sha256').update(text).digest('hex') };
+}
+
 export async function runManagedAgy(args, { stateDir = STATE_DIR, launchFn = null,
   nativePath = join(homedir(), '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
   selectFn = selectRoutingAccount, readStateFn = null, updateStateFn = null,
-  ownerAliveFn = agyOwnerAlive, intervalMs = 5000,
+  ownerAliveFn = agyOwnerAlive, idleFn = agyIdleConversation, intervalMs = 5000,
 } = {}) {
   const profile = readAccounts(stateDir).providers.agy;
   if (!profile?.accounts.some(a => a.enabled)) throw new Error('No enabled Antigravity account.');
@@ -109,10 +135,20 @@ export async function runManagedAgy(args, { stateDir = STATE_DIR, launchFn = nul
     const model = option(args, '--model');
     const chosen = await selectFn('agy', { stateDir, model, refresh: true });
     let account = chosen.account;
-    if (!account && ['expired_login', 'pinned_unavailable', 'never_switch'].includes(chosen.reason)) {
-      const candidate = currentProfile.accounts.find(a => a.enabled
-        && a.id === (currentProfile.pinnedAccountId || currentProfile.activeAccountId));
-      if (candidate && readCredential(candidate).expiresAt < Date.now()) account = candidate;
+    if (!account && ['expired_login', 'pinned_unavailable', 'never_switch', 'no_available_account'].includes(chosen.reason)) {
+      const enabled = currentProfile.accounts.filter(a => a.enabled);
+      const candidateId = currentProfile.pinnedAccountId || currentProfile.activeAccountId
+        || (enabled.length === 1 ? enabled[0].id : null);
+      const candidate = enabled.find(a => a.id === candidateId);
+      if (candidate && readCredential(candidate).expiresAt < Date.now()) {
+        account = candidate;
+        await mutateAccounts(config => {
+          if (JSON.stringify(config.providers.agy) !== JSON.stringify(currentProfile)) {
+            throw new Error('Antigravity configuration changed during native refresh preparation.');
+          }
+          config.providers.agy.activeAccountId = candidate.id;
+        }, stateDir);
+      }
     }
     if (!account) throw new Error('Antigravity quota is unavailable; no native session was started.');
     let nextArgs = args, resumeTarget = null;
@@ -122,23 +158,34 @@ export async function runManagedAgy(args, { stateDir = STATE_DIR, launchFn = nul
         account: { id: account.id, credential: account.credential }, cwd: process.cwd(),
         wrapperPid: process.pid, wrapperBirth: accountProcessBirth(process.pid),
         sessionId: resumeTarget?.sessionId || option(nextArgs, '--conversation') || null, child: null,
-        target: resumeTarget, updatedAt: Date.now() };
+        target: resumeTarget, startedAt: Date.now(), updatedAt: Date.now() };
       atomicPrivateJson(journalPath, journal);
       installAgyCredential(account, nativePath);
       journal.phase = 'prepared'; atomicPrivateJson(journalPath, journal);
-      let child = null, lease = null, switching = null, inFlight = null, ended = false;
+      let child = null, lease = null, switching = null, inFlight = null, ended = false, lastIdle = null;
       const check = async () => {
         if (!lease || !child || switching || ended) return;
         saveAgyCredential(account, nativePath);
         const stopped = Object.values(read().sessions || {}).find(s => s.agent === 'agy'
           && s.leaseId === lease.leaseId && s.status === 'stopped' && s.sessionId);
-        if (!stopped) return;
-        const next = await selectFn('agy', { stateDir, model, reason: 'limit', refresh: true,
-          exclude: [account.id], minFetchedAt: stopped.detectedAt || 0 });
+        let idle = null;
+        if (!stopped) {
+          idle = await idleFn(lease, { sessionId: journal.sessionId, cwd: journal.cwd, startedAt: journal.startedAt });
+          const previous = lastIdle;
+          lastIdle = idle;
+          if (!idle || !previous || previous.sessionId !== idle.sessionId || previous.signature !== idle.signature) return;
+        }
+        const next = await selectFn('agy', { stateDir, model, reason: stopped ? 'limit' : 'request', refresh: true,
+          exclude: stopped ? [account.id] : [], minFetchedAt: stopped?.detectedAt || 0 });
         if (ended || !next.account || next.account.id === account.id) return;
-        switching = { account: next.account, sessionId: stopped.sessionId, key: stopped.key, detectedAt: stopped.detectedAt };
+        if (idle) {
+          const finalIdle = await idleFn(lease, { sessionId: idle.sessionId, cwd: journal.cwd });
+          if (ended || finalIdle?.signature !== idle.signature || finalIdle?.sessionId !== idle.sessionId) return;
+        }
+        switching = { account: next.account, sessionId: stopped?.sessionId || idle.sessionId,
+          ...(stopped ? { key: stopped.key, detectedAt: stopped.detectedAt } : {}) };
         journal = { ...journal, phase: 'switching', target: { accountId: next.account.id,
-          sessionId: stopped.sessionId, key: stopped.key, detectedAt: stopped.detectedAt } };
+          sessionId: switching.sessionId, key: switching.key, detectedAt: switching.detectedAt } };
         atomicPrivateJson(journalPath, journal);
         child.kill('SIGTERM');
       };
@@ -152,7 +199,7 @@ export async function runManagedAgy(args, { stateDir = STATE_DIR, launchFn = nul
           childEnv: { UNSNOOZE_AGY_LAUNCH_NONCE: launchNonce },
           onChild: (p, metadata) => {
             child = p; lease = metadata;
-            journal = { ...journal, phase: 'running', child: metadata };
+            journal = { ...journal, phase: 'running', child: { ...metadata, pidBirth: accountProcessBirth(p.pid) } };
             try {
               atomicPrivateJson(journalPath, journal);
               if (resumeTarget?.key) update(state => {

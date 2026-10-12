@@ -51,8 +51,12 @@ export async function selectRoutingAccount(provider, {
         ? { ...entry, status: p.blocked[entry.id]?.status || (entry.status === 'ok' ? 'unknown' : entry.status) }
         : entry;
     }
+    // A rejection belongs to the caller's attempted account. Another session
+    // may already have moved the global active ID to a healthy replacement.
+    const selectionReason = ['limit', 'quota_exhausted'].includes(reason) && exclude.length
+      && !exclude.includes(profile.activeAccountId) ? 'request' : reason;
     const result = chooseAccount(profile, usage, {
-      now, reason, exclude, currentId: profile.activeAccountId, lastSwitchAt: p.lastSwitchAt,
+      now, reason: selectionReason, exclude, currentId: profile.activeAccountId, lastSwitchAt: p.lastSwitchAt,
     });
     if (result.account && result.account.id !== profile.activeAccountId) {
       await mutateAccounts(latest => {
@@ -65,6 +69,15 @@ export async function selectRoutingAccount(provider, {
         return { account: null, reason: 'configuration_changed', retryAt: now + 1000 };
       }
       p.lastSwitchAt = now;
+    }
+    if (!result.account) {
+      const constrainedId = profile.pinnedAccountId
+        || (profile.policy.neverSwitch || !profile.policy.onLimit ? profile.activeAccountId : null);
+      const statuses = profile.accounts.filter(a => a.enabled && (!constrainedId || a.id === constrainedId))
+        .map(a => usage[a.id]?.status);
+      result.status = statuses.length && statuses.every(s => s === 'quota_exhausted') ? 'quota_exhausted'
+        : statuses.includes('expired_login') ? 'expired_login'
+          : statuses.includes('network_error') ? 'network_error' : 'unknown';
     }
     atomicPrivateJson(join(stateDir, 'routing-state.json'), state);
     return result;

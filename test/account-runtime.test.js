@@ -98,3 +98,34 @@ test('concurrent routing decisions commit one account; live check clears stale b
   const recovered = await selectRoutingAccount('codex', { stateDir, now: now + 1, usageFn: async () => snapshot(now + 1, 0) });
   assert.ok(recovered.account);
 });
+
+test('a delayed quota rejection cannot disqualify another session\'s healthy replacement', async () => {
+  const stateDir = join(dir, 'late-rejection'), now = Date.now();
+  const config = emptyAccounts();
+  config.providers.codex.accounts = ['a', 'b'].map(id => ({ id, name: id, priority: 0, enabled: true,
+    credential: { type: 'managed', path: join(dir, `${id}.json`) } }));
+  config.providers.codex.activeAccountId = 'b';
+  saveAccounts(config, stateDir);
+  const usageFn = async () => ({ providers: { codex: { accounts: [
+    { id: 'a', status: 'quota_exhausted', fetchedAt: now, windows: [{ id: '5h', usedPercent: 100 }] },
+    { id: 'b', status: 'ok', fetchedAt: now, windows: [{ id: '5h', usedPercent: 10 }] },
+  ] } } });
+  const result = await selectRoutingAccount('codex', { stateDir, now, reason: 'limit', exclude: ['a'], usageFn });
+  assert.equal(result.account.id, 'b');
+});
+
+test('pinned quota and expired login retain their cause when policy prevents switching', async () => {
+  const stateDir = join(dir, 'pin-causes'), now = Date.now();
+  const config = emptyAccounts();
+  config.providers.codex.accounts = [{ id: 'a', name: 'a', priority: 0, enabled: true,
+    credential: { type: 'managed', path: join(dir, 'a.json') } }];
+  config.providers.codex.pinnedAccountId = 'a';
+  saveAccounts(config, stateDir);
+  for (const status of ['quota_exhausted', 'expired_login']) {
+    const result = await selectRoutingAccount('codex', { stateDir, now,
+      usageFn: async () => ({ providers: { codex: { accounts: [{ id: 'a', status, fetchedAt: now,
+        windows: status === 'quota_exhausted' ? [{ id: '5h', usedPercent: 100 }] : [] }] } } }),
+    });
+    assert.equal(result.account, null); assert.equal(result.status, status);
+  }
+});

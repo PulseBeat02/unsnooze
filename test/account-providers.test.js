@@ -183,6 +183,27 @@ test('Antigravity explicit bucket windows deduplicate shared models and reject a
   assert.throws(() => parseCodexUsage({ rate_limit: { primary_window: { used_percent: 1, limit_window_seconds: 0 } } }));
 });
 
+test('Antigravity live groups/displayName/buckets schema retains exact fractions and reset times', () => {
+  const body = { groups: [
+    { displayName: 'Gemini Models', buckets: [
+      { bucketId: 'gemini-weekly', displayName: 'Weekly Limit Remaining', window: 'weekly',
+        resetTime: '2026-10-18T23:15:42Z', remainingFraction: 0.9991576 },
+      { bucketId: 'gemini-5h', displayName: 'Five Hour Limit Remaining', window: '5h',
+        resetTime: '2026-10-12T04:15:42Z', remainingFraction: 0.9949456 },
+    ] },
+    { displayName: 'Claude and GPT models', buckets: [
+      { bucketId: '3p-weekly', window: 'weekly', resetTime: '2026-10-19T00:56:48Z', remainingFraction: 1 },
+      { bucketId: '3p-5h', window: '5h', resetTime: '2026-10-12T05:56:48Z', remainingFraction: 1 },
+    ] },
+  ] };
+  const windows = parseAgyUsage(body);
+  assert.deepEqual(windows.map(w => [w.id, w.usedPercent]), [
+    ['gemini:weekly', 0.08424], ['gemini:5h', 0.50544], ['claude-gpt:weekly', 0], ['claude-gpt:5h', 0],
+  ]);
+  assert.equal(windows[1].resetAt, Date.parse('2026-10-12T04:15:42Z'));
+  assert.throws(() => parseAgyUsage({ groups: [{ displayName: 'Gemini Models', buckets: {} }] }));
+});
+
 test('Antigravity stops after failed project discovery and handles malformed project responses', async () => {
   for (const [status, body, expected] of [[401, {}, 'expired_login'], [200, {}, 'unknown'],
     [200, { cloudaicompanionProject: {} }, 'unknown']]) {

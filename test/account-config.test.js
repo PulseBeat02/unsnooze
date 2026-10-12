@@ -27,6 +27,8 @@ test('missing config has all provider defaults and no enabled accounts', () => {
   const a = emptyAccounts(), b = emptyAccounts();
   a.providers.claude.policy.thresholdPercent = 1;
   assert.equal(b.providers.claude.policy.thresholdPercent, 95);
+  assert.throws(() => validateCredentialReference({ type: 'managed', path: credential }, 'agy'),
+    { code: 'ACCOUNT_CONFIG_INVALID' });
 });
 
 test('config round trip stores references and privately persists explicit policy', () => {

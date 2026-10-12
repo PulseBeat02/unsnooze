@@ -201,13 +201,15 @@ export function parseAgyUsage(body) {
   }
   const groups = summary.quotaGroups ?? summary.groups;
   if (groups != null) {
-    const entries = Array.isArray(groups) ? groups.map(g => [g?.name ?? g?.groupName, g])
+    const entries = Array.isArray(groups) ? groups.map(g => [g?.name ?? g?.groupName ?? g?.displayName, g])
       : record(groups) ? Object.entries(groups) : malformed();
     for (const [name, data] of entries) {
       if (!record(data)) return malformed();
       const group = agyGroup(name);
-      if (Array.isArray(data.windows)) {
-        for (const w of data.windows) add(w, group, agyWindow(w?.label ?? w?.window ?? w?.windowType));
+      const groupWindows = data.windows ?? data.buckets;
+      if (groupWindows != null) {
+        if (!Array.isArray(groupWindows)) return malformed();
+        for (const w of groupWindows) add(w, group, agyWindow(w?.window ?? w?.windowType ?? w?.label));
       } else {
         for (const [key, label] of [['fiveHour', '5h'], ['five_hour', '5h'], ['weekly', 'weekly'],
           ['sevenDay', 'weekly'], ['seven_day', 'weekly']]) {
