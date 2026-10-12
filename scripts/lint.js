@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 function walk(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory()
-    ? walk(join(dir, e.name)) : e.name.endsWith('.js') ? [join(dir, e.name)] : []);
+    ? walk(join(dir, e.name)) : /\.[cm]?js$/.test(e.name) ? [join(dir, e.name)] : []);
 }
 let failed = false;
 for (const file of [...walk('src'), ...walk('bin'), ...walk('scripts')]) {

@@ -40,7 +40,7 @@ git clone git@github.com:PulseBeat02/unsnooze.git
 cd unsnooze
 npm ci && npm test && npm run lint
 npm pack
-npm install -g ./unsnooze-1.20.1-pulse.3.tgz
+npm install -g ./unsnooze-1.20.1-pulse.4.tgz
 unsnooze accounts import all
 unsnooze accounts list --json
 unsnooze usage --json --refresh
@@ -115,6 +115,37 @@ whole-process or host restart. Notifications and registry updates default off.
 `bin/unsnooze-update` pulls only the owner's `origin/main` with fast-forward
 history, runs a clean dependency install, tests and lint, then installs globally
 only after those checks pass. A dirty checkout or unexpected remote stops it.
+
+`bin/unsnooze-shell.bash` is an optional Bash migration block. Source it after
+older wrappers when performing a backed-up cutover. It preserves native
+`claude -c` and `agy -c`, maps a **bare** `codex -c` to `codex resume --last`,
+and leaves valued Codex configuration flags intact.
+
+The repeatable Linux acceptance workflow is separate from the unit suite:
+
+```sh
+node scripts/verify-artifact.js /private/verification/artifact
+node scripts/verify-e2e.js /private/verification/artifact/artifact.json /private/verification/e2e
+# A clean commit, fish on PATH, an existing progress directory, and a NEW run directory:
+node scripts/verify-five.js /private/verification/five-passes /private/progress
+```
+
+Each of the five sequential passes runs the entire unfiltered `npm test` suite
+(four test files at a time), lint, a fresh reproducible package check, and the
+isolated acceptance workflow. A failure stops the sequence without retrying.
+Every pass records its commit, test counts and artifact hash. Fish must be
+available; the two real Windows legacy-daemon cases remain platform skips on
+Linux. The uninstall-before-start race runs on all platforms.
+
+Acceptance checks install into a disposable npm prefix, use synthetic accounts
+and local provider endpoints, and exercise actual CLI commands, routing,
+same-session native restarts, parked-session recovery, daemon crashes and
+staged shell/package rollback. Native provider programs are fixtures; the host
+handshake is simulated. The updater's external git/npm boundaries are stubbed
+to prove that failed tests or lint cannot install. This verifies deployment
+mechanics without certifying a production cutover. No real credentials or
+installed user programs are changed. Set `TMPDIR` and `npm_config_cache` to
+private work directories when operating under a maintenance write boundary.
 
 ## Why unsnooze
 

@@ -458,7 +458,7 @@ winTest('the StopFailure hook starts the daemon once setup asked for it', async 
   }
 });
 
-winTest('an on-demand daemon starting after uninstall exits without claiming anything', () => {
+test('an on-demand daemon starting after uninstall exits without claiming anything', () => {
   // The marker is gone by the time it runs: it must not become a daemon that
   // outlives the uninstall until sign-out.
   const state = join(DIR, 'bin-uninstalled');

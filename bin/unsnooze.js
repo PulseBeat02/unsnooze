@@ -248,7 +248,9 @@ async function main() {
       return mod.runUpdateCheck();
     }
     case 'daemon': {
-      if (process.env.UNSNOOZE_LEGACY_DAEMON !== '1') {
+      // --on-demand belongs to the legacy Windows autostart protocol, even
+      // when managed accounts exist. Never feed it to the account CLI parser.
+      if (process.env.UNSNOOZE_LEGACY_DAEMON !== '1' && !rest.includes('--on-demand')) {
         const accountConfig = await safeImport('../src/accounts/config.js');
         if (accountConfig && (rest.length || accountConfig.hasAccounts())) {
           const { cmdAccountDaemon } = await import('../src/accounts/daemon.js');
@@ -281,6 +283,9 @@ async function main() {
       // stands down. --on-demand (how ensureDaemon starts it) also ties the
       // daemon to its marker, so uninstall ends it rather than sign-out.
       const onDemand = rest.includes('--on-demand');
+      // The uninstall race is platform-independent: a delayed autostart must
+      // not resurrect a daemon once its request marker has been removed.
+      if (onDemand && !spawnMod.onDemandWanted()) return 0;
       let releaseDaemon = null;
       if (process.platform === 'win32') {
         const wanted = onDemand ? () => spawnMod.onDemandWanted() : () => true;
