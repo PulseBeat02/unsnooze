@@ -40,7 +40,7 @@ git clone git@github.com:PulseBeat02/unsnooze.git
 cd unsnooze
 npm ci && npm test && npm run lint
 npm pack
-npm install -g ./unsnooze-1.20.1-pulse.2.tgz
+npm install -g ./unsnooze-1.20.1-pulse.3.tgz
 unsnooze accounts import all
 unsnooze accounts list --json
 unsnooze usage --json --refresh
@@ -79,6 +79,8 @@ live check is required before clearing a local block or waking a managed session
 `fetchedAt`, `stale` and windows containing exact **used** percentages and epoch
 millisecond reset times. Window names follow the provider; a Pro Lite primary
 window can be weekly. The existing Usage dashboard displays these observations.
+Exit code 2 signals the configured high-usage warning threshold; the JSON is
+still valid. Inspect each account's status and freshness when checking health.
 Claude uses its OAuth usage endpoint where authorized, or headers captured from
 real requests. `unsnooze usage --json --probe` explicitly permits a one-token
 Claude header probe. Routing can make that probe on demand when no fresh

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.20.1-pulse.3 — 2026-10-12
+
+- Exercise worker death after an account-switch commit and before forwarding,
+  then verify recovery with the same selected account and conversation.
+- Bound test-file concurrency to four so nightly checks can coexist with active
+  agent sessions; keep the tests' internal multi-process races intact.
+
 ## 1.20.1-pulse.2 — 2026-10-12
 
 - Parse Antigravity's live grouped quota buckets with exact remaining fractions.

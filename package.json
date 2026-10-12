@@ -1,6 +1,6 @@
 {
   "name": "unsnooze",
-  "version": "1.20.1-pulse.2",
+  "version": "1.20.1-pulse.3",
   "description": "Automatically resume Claude Code, Codex CLI, Grok, Qwen Code, Kimi CLI, OpenCode, Antigravity, and Cursor CLI sessions when 5-hour or weekly usage limits reset\u2014on macOS, Linux and Windows, with or without a terminal multiplexer.",
   "keywords": [
     "claude",
@@ -73,7 +73,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "test": "node --test",
+    "test": "node --test --test-concurrency=4",
     "lint": "node scripts/lint.js"
   },
   "engines": {

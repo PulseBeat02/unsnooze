@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
+import { emptyAccounts, saveAccounts, readAccounts } from '../src/accounts/config.js';
 import {
   ensureAccountDaemon, stopAccountDaemon, accountDaemonStatus, accountProcessBirth,
   requestAccountHealth, cmdAccountDaemon,
@@ -20,8 +21,8 @@ const read = file => JSON.parse(readFileSync(file, 'utf8'));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const configured = () => ({ providers: { claude: { accounts: [{ id: 'test', enabled: true }] } } });
 
-// No real proxy, credentials, provider requests, watchers, or user config are
-// loaded in this fixture. It exercises the actual supervisor over real IPC,
+// No real credentials, provider requests, watchers, or user config are used in
+// this fixture. It exercises the actual supervisor over real IPC,
 // process exits, private files and an authenticated loopback HTTP endpoint.
 writeFileSync(FIXTURE, `
 import { runAccountSupervisor, runAccountWorker } from ${JSON.stringify(MODULE)};
@@ -41,7 +42,7 @@ if (role === 'legacy') {
   process.on('message', m => { if (m?.type === 'unsnooze-stop') process.exit(0); });
 } else if (role === 'supervisor') {
   await runAccountSupervisor({ stateDir, port, heartbeatMs:40, restartBaseMs:40, restartMaxMs:120,
-    healthGraceMs:300, healthCheckMs:60,
+    healthGraceMs:2000, healthCheckMs:60,
     spawnWorker: opts => start('worker', { UNSNOOZE_ACCOUNT_INSTANCE:opts.instanceId,
       UNSNOOZE_ACCOUNT_WORKER:opts.workerId, UNSNOOZE_ACCOUNT_SUPERVISOR_PID:String(opts.supervisorPid) }),
   });
@@ -50,6 +51,35 @@ if (role === 'legacy') {
     reconcile:async()=>{}, hasVersionSkew:()=>false,
     startLegacy:()=>start('legacy'),
     startProxy:async({port,health})=>{
+      if (existsSync(join(stateDir, 'routing-fixture'))) {
+        const { startAccountProxy } = await import(${JSON.stringify(new URL('../src/accounts/proxy.js', import.meta.url).href)});
+        const { selectRoutingAccount } = await import(${JSON.stringify(new URL('../src/accounts/routing.js', import.meta.url).href)});
+        const { atomicPrivateJson } = await import(${JSON.stringify(new URL('../src/accounts/store.js', import.meta.url).href)});
+        return startAccountProxy({ stateDir, port, health,
+          selectFn:(provider,opts)=>selectRoutingAccount(provider,{...opts,usageFn:async()=>({
+            providers:{codex:{accounts:['a','b'].map(id=>({id,status:id==='a'&&existsSync(join(stateDir,'a-rejected'))?'quota_exhausted':'ok',
+              fetchedAt:Date.now(),stale:false,windows:[{id:'5h',usedPercent:id==='a'&&existsSync(join(stateDir,'a-rejected'))?100:0}]}))}},
+          })}),
+          credentialFn:async(_provider,account)=>{
+            if(account.id==='b'&&!existsSync(join(stateDir,'switch-committed.json'))) {
+              atomicPrivateJson(join(stateDir,'switch-committed.json'),{accountId:account.id});
+              await new Promise(()=>{}); // killed after commit but before forwarding
+            }
+            return {accessToken:account.id};
+          },
+          usageHeadersFn:async()=>{},
+          fetchFn:async(_url,opts)=>{
+            if(opts.headers.get('authorization')==='Bearer a') {
+              writeFileSync(join(stateDir,'a-rejected'),'1',{mode:0o600});
+              return new Response('{"error":{"type":"usage_limit_reached"}}',{status:429});
+            }
+            atomicPrivateJson(join(stateDir,'forwarded.json'),{
+              accountId:'b',sessionId:opts.headers.get('session_id'),body:opts.body.toString(),
+            });
+            return new Response('resumed-same-conversation');
+          },
+        });
+      }
       const tokenPath = join(stateDir, 'router-token');
       if (!existsSync(tokenPath)) writeFileSync(tokenPath, 'test-local-token', {mode:0o600});
       const server = createServer((req,res)=>{
@@ -162,6 +192,38 @@ test('supervisor replaces a killed worker at the same port and worker restarts i
   assert.equal(second.metadata.instanceId, first.metadata.instanceId);
   assert.notEqual(second.metadata.workerId, first.metadata.workerId);
   assert.equal(readFileSync(join(stateDir, 'router-token'), 'utf8'), 'test-local-token');
+});
+
+test('daemon killed after a quota switch commit recovers the chosen account and exact conversation', async t => {
+  const stateDir = join(DIR, 'killed-mid-switch'), port = await freePort();
+  const config = emptyAccounts();
+  config.providers.codex.accounts = ['a', 'b'].map(id => ({ id, name: id, enabled: true, priority: 0,
+    credential: { type: 'managed', path: join(stateDir, `${id}.json`) } }));
+  config.providers.codex.activeAccountId = 'a';
+  saveAccounts(config, stateDir);
+  writeFileSync(join(stateDir, 'routing-fixture'), '1', { mode: 0o600 });
+  const options = { stateDir, port, spawnSupervisor: fixtureSpawner({ value: 0 }) };
+  t.after(() => stopAccountDaemon({ stateDir }));
+  const first = await ensureAccountDaemon(options);
+  const body = JSON.stringify({ model: 'gpt-test', input: [{ role: 'user', content: 'fixture conversation' }] });
+  const request = () => fetch(`http://127.0.0.1:${port}/codex/responses`, { method: 'POST',
+    headers: { authorization: `Bearer ${readFileSync(join(stateDir, 'router-token'), 'utf8')}`,
+      session_id: 'durable-session' }, body, signal: AbortSignal.timeout(20000) });
+  const interrupted = request().then(r => r.text()).catch(() => 'disconnected');
+  await until(() => existsSync(join(stateDir, 'switch-committed.json')), 12000);
+  assert.equal(readAccounts(stateDir).providers.codex.activeAccountId, 'b');
+  assert.equal(existsSync(join(stateDir, 'forwarded.json')), false);
+  process.kill(first.pid, 'SIGKILL');
+  assert.equal(await interrupted, 'disconnected');
+  const recovered = await until(async () => {
+    const status = await accountDaemonStatus({ stateDir });
+    return status.healthy && status.pid !== first.pid && status;
+  }, 12000);
+  assert.equal(recovered.supervisorPid, first.supervisorPid);
+  const response = await request();
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), 'resumed-same-conversation');
+  assert.deepEqual(read(join(stateDir, 'forwarded.json')), { accountId: 'b', sessionId: 'durable-session', body });
 });
 
 test('corrupt metadata recovers and forged health identity cannot look healthy', async t => {
