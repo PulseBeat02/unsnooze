@@ -236,6 +236,57 @@ test('Linux process birth mismatch recovers a recycled PID without waiting for a
   assert.deepEqual(readdirSync(`${path}.lock`), []);
 });
 
+test('Linux zombie owner is recoverable before its parent reaps the PID', { skip: process.platform !== 'linux' }, async () => {
+  const path = file('zombie.json');
+  mkdirSync(`${path}.lock`, { mode: 0o700 });
+  const pid = 2_123_456_789;
+  const nonce = '12345678-1234-1234-1234-123456789012';
+  atomicPrivateJson(join(`${path}.lock`, `${pid}-unknown-${nonce}.json`), { pid, birth: 'unknown', nonce, ticket: 1 });
+  const fixture = child(`import fs from 'node:fs';
+    import {syncBuiltinESMExports} from 'node:module';
+    const originalRead=fs.readFileSync,originalKill=process.kill;
+    process.kill=(pid,signal)=>pid===${pid} && signal===0 ? true : originalKill(pid,signal);
+    fs.readFileSync=(path,...args)=>path===${JSON.stringify(`/proc/${pid}/stat`)}
+      ? '${pid} (unreaped lock owner) Z 0 0 0' : originalRead(path,...args);
+    syncBuiltinESMExports();
+    const {withStoreLock}=await import(${JSON.stringify(MODULE)});
+    let entered=false;
+    await withStoreLock(${JSON.stringify(path)},async()=>{entered=true},{timeoutMs:100,pollMs:10});
+    process.stdout.write(JSON.stringify({entered}));`);
+  const result = await fixture.ended;
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { entered: true });
+  assert.deepEqual(readdirSync(`${path}.lock`), []);
+});
+
+test('unreadable live process state is not authority to steal its lock', { skip: process.platform !== 'linux' }, async () => {
+  const path = file('unreadable-owner.json');
+  mkdirSync(`${path}.lock`, { mode: 0o700 });
+  const pid = 2_123_456_788;
+  const nonce = '12345678-1234-1234-1234-123456789012';
+  const birth = createHash('sha256').update('unreadable birth').digest('hex');
+  const claim = `${pid}-${birth}-${nonce}.json`;
+  atomicPrivateJson(join(`${path}.lock`, claim), { pid, birth, nonce, ticket: 1 });
+  const fixture = child(`import fs from 'node:fs';
+    import {syncBuiltinESMExports} from 'node:module';
+    const originalRead=fs.readFileSync,originalKill=process.kill;
+    process.kill=(pid,signal)=>pid===${pid} && signal===0 ? true : originalKill(pid,signal);
+    fs.readFileSync=(path,...args)=>{
+      if(path===${JSON.stringify(`/proc/${pid}/stat`)})throw Object.assign(new Error('unreadable'),{code:'EACCES'});
+      return originalRead(path,...args);
+    };
+    syncBuiltinESMExports();
+    const {withStoreLock}=await import(${JSON.stringify(MODULE)});
+    let code;
+    try {await withStoreLock(${JSON.stringify(path)},async()=>{throw new Error('must not enter')},{timeoutMs:100,pollMs:10});}
+    catch(e){code=e.code}
+    process.stdout.write(JSON.stringify({code}));`);
+  const result = await fixture.ended;
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { code: 'LOCK_TIMEOUT' });
+  assert.deepEqual(readdirSync(`${path}.lock`), [claim]);
+});
+
 test('a corrupt live owner claim fails closed and is not erased', async () => {
   const path = file('bad-lock.json');
   mkdirSync(`${path}.lock`, { mode: 0o700 });

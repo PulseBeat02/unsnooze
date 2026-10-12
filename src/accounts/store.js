@@ -170,6 +170,14 @@ const CLAIM = /^(\d+)-(unknown|[a-f0-9]{64})-([a-f0-9-]{36})\.json$/;
 function ownerAlive(pid, birth) {
   try { process.kill(pid, 0); }
   catch (err) { if (err?.code === 'ESRCH') return false; return true; }
+  if (process.platform === 'linux') {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+      // kill(pid, 0) also succeeds for zombies. They cannot resume a critical
+      // section, even if their parent (or PID 1) has not yet reaped them.
+      if (stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] === 'Z') return false;
+    } catch { /* unreadable process state is not proof of death */ }
+  }
   if (birth === 'unknown') return true;
   const actual = birthId(pid);
   // Failure to inspect a live process is not permission to steal its lock.
