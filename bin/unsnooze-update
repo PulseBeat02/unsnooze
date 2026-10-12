@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Verified fork updater; never install from the upstream npm tag.
 set -euo pipefail
-task_repo="${UNSNOOZE_FORK_REPO:-$HOME/projects/unsnooze}"
+task_repo="${UNSNOOZE_FORK_REPO:-$HOME/projects/WebstormProjects/unsnooze}"
 cd "$task_repo"
 task_lock="$(git rev-parse --git-path unsnooze-update.lock)"
 exec 9> "$task_lock"

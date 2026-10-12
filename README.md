@@ -40,7 +40,7 @@ git clone git@github.com:PulseBeat02/unsnooze.git
 cd unsnooze
 npm ci && npm test && npm run lint
 npm pack
-npm install -g ./unsnooze-1.20.1-pulse.4.tgz
+npm install -g ./unsnooze-1.20.1-pulse.5.tgz
 unsnooze accounts import all
 unsnooze accounts list --json
 unsnooze usage --json --refresh

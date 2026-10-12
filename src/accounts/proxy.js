@@ -48,7 +48,7 @@ export function upstreamRoute(rawPath) {
     if (path.startsWith('/codex/')) path = path.slice('/codex'.length);
     if (['/responses', '/responses/compact', '/images/generations', '/images/edits',
       '/models', '/thread/goal'].includes(path)) {
-      return { provider: 'codex', path: (path === '/models' ? path : '/codex' + path) + url.search };
+      return { provider: 'codex', path: '/codex' + path + url.search };
     }
   }
   return null;

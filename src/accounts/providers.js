@@ -290,6 +290,8 @@ export function usageFromHeaders(provider, headers, { now = Date.now() } = {}) {
   }
 }
 
+export const CLAUDE_PROBE_FALLBACK_CODES = Object.freeze(['permission_denied', 'unavailable', 'malformed', 'rate_limited']);
+
 export async function fetchAccountUsage(provider, credential, {
   fetchFn = globalThis.fetch, now = Date.now(), timeoutMs = DEFAULT_TIMEOUT_MS,
   endpoints = {}, allowProbe = false, probeModel = 'claude-haiku-4-5-20251001',
@@ -313,7 +315,7 @@ export async function fetchAccountUsage(provider, credential, {
         return result(parseClaudeUsage(body), source, now);
       } catch (err) {
         if (!allowProbe || !(err instanceof ProviderError)
-          || !['permission_denied', 'unavailable', 'malformed'].includes(err.code)) throw err;
+          || !CLAUDE_PROBE_FALLBACK_CODES.includes(err.code)) throw err;
         source = 'claude-probe';
         return await request(urls.claudeProbe, {
           method: 'POST', headers: { ...headers, 'content-type': 'application/json' },

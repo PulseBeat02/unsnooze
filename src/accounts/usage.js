@@ -4,7 +4,7 @@ import { STATE_DIR } from '../config.js';
 import { readAccounts, PROVIDERS } from './config.js';
 import { readPrivateJson, atomicPrivateJson, withStoreLock } from './store.js';
 import { readCredential, CredentialError } from './credentials.js';
-import { fetchAccountUsage, usageFailureMessage, usageFromHeaders } from './providers.js';
+import { fetchAccountUsage, usageFailureMessage, usageFromHeaders, CLAUDE_PROBE_FALLBACK_CODES } from './providers.js';
 
 export const USAGE_CACHE_TTL_MS = 60_000;
 const STATUSES = new Set(['ok', 'quota_exhausted', 'expired_login', 'network_error', 'unknown']);
@@ -129,7 +129,7 @@ async function collectSnapshot({ stateDir, refresh, fetchFn, now, timeoutMs, all
       if (!refresh && sameReference && previous?.enabled !== false && checkedAt !== null
         && Number.isFinite(checkedAt) && checkedAt <= now && now - checkedAt < USAGE_CACHE_TTL_MS
         && !(previous.stale && ['ok', 'quota_exhausted'].includes(previous.status))
-        && !(allowProbe && provider === 'claude' && previous.code === 'permission_denied')) {
+        && !(allowProbe && provider === 'claude' && CLAUDE_PROBE_FALLBACK_CODES.includes(previous.code))) {
         return { ...previous, ...metadata };
       }
       fetched = true;
@@ -145,9 +145,9 @@ async function collectSnapshot({ stateDir, refresh, fetchFn, now, timeoutMs, all
         usage = { status: code === 'network_error' ? 'network_error' : 'expired_login', code, message: usageFailureMessage(code),
           source: 'unavailable', fetchedAt: now, windows: [] };
       }
-      // Setup tokens may read quota headers on real work but lack permission
-      // for OAuth usage. Preserve a still-fresh observation, not its age.
-      if (provider === 'claude' && usage.code === 'permission_denied' && sameReference
+      // Setup tokens may read quota headers on real work while OAuth usage
+      // is inaccessible or throttled. Preserve a fresh observation, not its age.
+      if (provider === 'claude' && ['permission_denied', 'rate_limited'].includes(usage.code) && sameReference
         && previous && !previous.stale && ['claude-headers', 'claude-probe'].includes(previous.source)) {
         return { ...previous, ...metadata, checkedAt: now };
       }

@@ -139,6 +139,32 @@ test('Claude probe is strictly opt-in, costs one output token, and reads only qu
   assert.doesNotMatch(JSON.stringify(optedIn), /ignored-secret/);
 });
 
+test('a throttled Claude usage endpoint allows only an authorized one-token header probe', async () => {
+  let probes = 0;
+  const fetchFn = async (url, init) => {
+    if (url === USAGE_ENDPOINTS.claudeUsage) return response({}, 429);
+    assert.equal(url, USAGE_ENDPOINTS.claudeProbe);
+    assert.equal(JSON.parse(init.body).max_tokens, 1);
+    probes++;
+    return response({}, 200, {
+      'anthropic-ratelimit-unified-5h-utilization': '0.14',
+      'anthropic-ratelimit-unified-5h-reset': String(RESET / 1000),
+    });
+  };
+  const background = await fetchAccountUsage('claude', credential, { fetchFn, now: NOW });
+  assert.equal(background.code, 'rate_limited');
+  assert.equal(background.status, 'unknown');
+  assert.equal(probes, 0);
+  const explicit = await fetchAccountUsage('claude', credential, { fetchFn, now: NOW, allowProbe: true });
+  assert.equal(explicit.status, 'ok');
+  assert.equal(explicit.windows[0].usedPercent, 14);
+  assert.equal(probes, 1);
+  const expired = await fetchAccountUsage('claude', credential, { now: NOW, allowProbe: true,
+    fetchFn: async () => response({}, 401) });
+  assert.equal(expired.status, 'expired_login');
+  assert.equal(probes, 1);
+});
+
 test('ordinary Claude and Codex response quota headers parse actual USED numbers', () => {
   const h = new Headers({ 'x-codex-primary-used-percent': '92.5', 'x-codex-primary-window-minutes': '300',
     'x-codex-primary-reset-after-seconds': '90' });

@@ -32,7 +32,7 @@ test('router auth, private token, exact route allowlist and health identity', as
       assert.equal(upstreamRoute(p), null);
     }
     assert.deepEqual(upstreamRoute('/codex/responses'), { provider: 'codex', path: '/codex/responses' });
-    assert.deepEqual(upstreamRoute('/codex/models?client_version=1'), { provider: 'codex', path: '/models?client_version=1' });
+    assert.deepEqual(upstreamRoute('/codex/models?client_version=1'), { provider: 'codex', path: '/codex/models?client_version=1' });
   } finally { await s.close(); }
 });
 
@@ -82,6 +82,25 @@ test('expired login and network outage are distinct from quota; provider error b
       const text = await r.text(); assert.doesNotMatch(text, /FAKE_SECRET|usage limit/);
     } finally { await s.close(); }
   }
+});
+
+test('native Codex model discovery uses its authenticated codex endpoint', async () => {
+  let called = false;
+  const s = await fixture({ fetchFn: async (url, init) => {
+    called = true;
+    assert.equal(url, 'https://chatgpt.com/backend-api/codex/models?client_version=0.112.0');
+    assert.equal(init.headers.get('authorization'), 'Bearer fake-provider');
+    assert.equal(init.headers.get('chatgpt-account-id'), 'fake-account');
+    return Response.json({ models: [{ slug: 'fixture-model' }] });
+  } });
+  try {
+    const response = await fetch(s.url + '/codex/models?client_version=0.112.0', {
+      headers: { authorization: `Bearer ${s.token}` },
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).models[0].slug, 'fixture-model');
+    assert.equal(called, true);
+  } finally { await s.close(); }
 });
 
 test('all exhausted waits, a later verified request succeeds at reset', async () => {

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.20.1-pulse.5 — 2026-10-12
+
+- Let authorized Claude header probes recover when the OAuth usage endpoint is
+  throttled. Keep fresh response headers until their original expiry without
+  confusing usage-service throttling with account quota exhaustion.
+- Route Codex model discovery through `/backend-api/codex/models`, preserving
+  its query string and account authentication.
+- Follow the owner's relocated checkout at `~/projects/WebstormProjects/unsnooze`
+  in the updater's default path.
+
 ## 1.20.1-pulse.4 — 2026-10-12
 
 - Preserve the legacy `daemon --on-demand` startup protocol and exit safely

@@ -185,6 +185,29 @@ test('an explicit probe can repair recently cached permission errors without ena
   assert.equal(get(snapshot).status, 'ok');
 });
 
+test('Claude usage throttling retains fresh headers without extending their age, then an explicit probe repairs the cached error', async () => {
+  const { stateDir } = setup();
+  const headers = { 'anthropic-ratelimit-unified-5h-utilization': '0.14',
+    'anthropic-ratelimit-unified-5h-reset': String(RESET / 1000) };
+  await recordUsageHeaders('claude', 'alpha', new Headers(headers), { stateDir, now: NOW });
+  const backgroundFetch = async () => new Response('{}', { status: 429 });
+  const fresh = await fetchUsageSnapshot({ stateDir, now: NOW + 1000, refresh: true, fetchFn: backgroundFetch });
+  assert.equal(get(fresh).status, 'ok');
+  assert.equal(get(fresh).fetchedAt, NOW);
+  const stale = await fetchUsageSnapshot({ stateDir, now: NOW + 60001, fetchFn: backgroundFetch });
+  assert.equal(get(stale).code, 'rate_limited');
+  assert.equal(get(stale).stale, true);
+  let calls = 0;
+  const repaired = await fetchUsageSnapshot({ stateDir, now: NOW + 60002, allowProbe: true, fetchFn: async url => {
+    calls++;
+    return url.endsWith('/usage') ? new Response('{}', { status: 429 }) : new Response('{}', { headers });
+  } });
+  assert.equal(calls, 2);
+  assert.equal(get(repaired).status, 'ok');
+  assert.equal(get(repaired).source, 'claude-probe');
+  assert.equal(get(repaired).fetchedAt, NOW + 60002);
+});
+
 test('an explicit probe waits for a concurrent background GET then uses its own authorization', async () => {
   const { stateDir } = setup();
   let release;
