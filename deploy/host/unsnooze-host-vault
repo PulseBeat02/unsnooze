@@ -1,0 +1,82 @@
+#!/bin/bash
+# unsnooze-host-vault - the account host's logins, encrypted at rest with systemd-creds (host key, like host-secrets);
+# plaintext exists only in RAM (/run/unsnooze-host/credentials, owner unsnooze-host, 0600).
+#   unlock                 decrypt every vault entry into RAM; a RAM copy that is already there is kept (it may be newer)
+#   save                   re-encrypt RAM copies that changed (path unit on every change, hourly timer, service stop)
+#   import <name> <file>   encrypt <file> into the vault and place its RAM copy
+#   export <name> <file>   decrypt one entry to <file>, mode 0600 (rollback to the devbox)
+#   status                 one line per entry: name, RAM copy present, in sync with the vault
+# Never prints credential contents.
+set -euo pipefail
+VAULT=${UNSNOOZE_VAULT_DIR:-/var/lib/unsnooze-vault}
+RUN=${UNSNOOZE_VAULT_RUN:-/run/unsnooze-host}
+RAM=$RUN/credentials
+SCRATCH=${UNSNOOZE_VAULT_SCRATCH:-/run/unsnooze-host-vault}
+OWNER=${UNSNOOZE_VAULT_OWNER:-unsnooze-host}
+umask 077
+
+valid() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]] || { echo "invalid credential name: $1" >&2; exit 2; }; }
+enc() { systemd-creds encrypt --with-key=host --name="unsnooze-$1" "$2" "$VAULT/$1.cred.new" && mv -f "$VAULT/$1.cred.new" "$VAULT/$1.cred"; }
+dec() { systemd-creds decrypt --name="unsnooze-$1" "$VAULT/$1.cred" "$2"; }
+names() { local f; for f in "$VAULT"/*.cred; do [ -e "$f" ] && basename "$f" .cred; done; }
+place() { # place <plaintext-in-scratch> <name>: atomically into RAM, owned by the service user
+  chown "$OWNER:$OWNER" "$1"; chmod 600 "$1"; mv -f "$1" "$RAM/.$2.vault-tmp"; mv -f "$RAM/.$2.vault-tmp" "$RAM/$2"; }
+prepare() {
+  install -d -m 700 "$VAULT" "$SCRATCH"
+  install -d -o "$OWNER" -g "$OWNER" -m 700 "$RUN" "$RAM"
+  exec 9> "$SCRATCH/lock"; flock -w 60 9
+}
+
+case "${1:-}" in
+  unlock)
+    prepare
+    for name in $(names); do
+      [ -s "$RAM/$name" ] && continue
+      dec "$name" "$SCRATCH/$name" && place "$SCRATCH/$name" "$name" || echo "unsnooze-host-vault: cannot decrypt $name" >&2
+    done ;;
+  save)
+    prepare
+    for f in "$RAM"/*; do
+      [ -f "$f" ] && [ ! -L "$f" ] || continue
+      name=$(basename "$f")
+      case "$name" in .*|*.tmp) continue ;; esac
+      valid "$name"
+      if [ -e "$VAULT/$name.cred" ] && dec "$name" "$SCRATCH/$name.old" 2>/dev/null && cmp -s "$f" "$SCRATCH/$name.old"; then
+        rm -f "$SCRATCH/$name.old"; continue
+      fi
+      rm -f "$SCRATCH/$name.old"
+      cp "$f" "$SCRATCH/$name.new"
+      enc "$name" "$SCRATCH/$name.new" && echo "saved $name"
+      rm -f "$SCRATCH/$name.new"
+    done ;;
+  import)
+    name=${2:?name}; src=${3:?file}; valid "$name"
+    [ -f "$src" ] && [ ! -L "$src" ] || { echo "not a regular file: $src" >&2; exit 1; }
+    prepare
+    cp "$src" "$SCRATCH/$name.new"
+    enc "$name" "$SCRATCH/$name.new"
+    dec "$name" "$SCRATCH/$name.check"
+    cmp -s "$SCRATCH/$name.new" "$SCRATCH/$name.check" || { rm -f "$SCRATCH/$name".*; echo "verify failed for $name" >&2; exit 1; }
+    rm -f "$SCRATCH/$name.new"
+    place "$SCRATCH/$name.check" "$name"
+    echo "imported $name" ;;
+  export)
+    name=${2:?name}; dest=${3:?file}; valid "$name"
+    prepare
+    # Prefer the RAM copy: it is the newest (a refresh may not be saved yet).
+    if [ -s "$RAM/$name" ]; then cp "$RAM/$name" "$dest.new"; else dec "$name" "$dest.new"; fi
+    chmod 600 "$dest.new"; mv -f "$dest.new" "$dest"
+    echo "exported $name" ;;
+  status)
+    install -d -m 700 "$SCRATCH"
+    for name in $(names); do
+      st=locked
+      if [ -s "$RAM/$name" ]; then
+        st=ram
+        if dec "$name" "$SCRATCH/$name.st" 2>/dev/null && cmp -s "$RAM/$name" "$SCRATCH/$name.st"; then st="$st,saved"; else st="$st,UNSAVED"; fi
+        rm -f "$SCRATCH/$name.st"
+      fi
+      printf '%-48s %s\n' "$name" "$st"
+    done ;;
+  *) sed -n '2,10p' "$0" >&2; exit 2 ;;
+esac

@@ -5,6 +5,7 @@ import { readAccounts, PROVIDERS } from './config.js';
 import { readPrivateJson, atomicPrivateJson, withStoreLock } from './store.js';
 import { readCredential, CredentialError } from './credentials.js';
 import { fetchAccountUsage, usageFailureMessage, usageFromHeaders, CLAUDE_PROBE_FALLBACK_CODES } from './providers.js';
+import { readRemoteConfig, remoteUsage } from './remote.js';
 
 export const USAGE_CACHE_TTL_MS = 60_000;
 const STATUSES = new Set(['ok', 'quota_exhausted', 'expired_login', 'network_error', 'unknown']);
@@ -104,7 +105,7 @@ export function readUsageCache({ stateDir = STATE_DIR, now = Date.now(), maxAgeM
   return sanitizeSnapshot(readRawCache(stateDir), now, maxAgeMs);
 }
 
-async function collectSnapshot({ stateDir, refresh, fetchFn, now, timeoutMs, allowProbe, endpoints }) {
+async function collectSnapshot({ stateDir, refresh, fetchFn, now, timeoutMs, allowProbe, endpoints, skip = [] }) {
   const config = readAccounts(stateDir);
   const rawCache = readRawCache(stateDir);
   const cache = sanitizeSnapshot(rawCache, now, USAGE_CACHE_TTL_MS);
@@ -113,7 +114,7 @@ async function collectSnapshot({ stateDir, refresh, fetchFn, now, timeoutMs, all
   let fetched = false;
   await Promise.all(PROVIDERS.map(async provider => {
     const accounts = config.providers[provider]?.accounts || [];
-    if (!accounts.length) return;
+    if (!accounts.length || skip.includes(provider)) return;
     referenceKeys[provider] = {};
     snapshot.providers[provider] = { accounts: await Promise.all(accounts.map(async account => {
       const metadata = { id: account.id, name: account.name, enabled: account.enabled };
@@ -187,10 +188,37 @@ async function collectSnapshot({ stateDir, refresh, fetchFn, now, timeoutMs, all
   return sanitizeSnapshot(snapshot, now, USAGE_CACHE_TTL_MS);
 }
 
+// Providers held by an account host are measured there; the host's sanitized
+// snapshot replaces them here. A host outage reads as network_error, which
+// holds sessions and never wakes one.
+async function remoteSnapshot(remote, { stateDir, refresh, fetchFn, now, timeoutMs, allowProbe, endpoints, usageFn }) {
+  const [host, local] = await Promise.all([
+    usageFn(remote, { refresh, allowProbe }).catch(() => null),
+    collectSnapshot({ stateDir, refresh, fetchFn, now, timeoutMs, allowProbe, endpoints, skip: remote.providers }),
+  ]);
+  const merged = { version: 1, fetchedAt: now, providers: { ...local.providers } };
+  let config;
+  try { config = readAccounts(stateDir); } catch { config = null; }
+  for (const provider of remote.providers) {
+    const section = object(host) && object(host.providers) ? host.providers[provider] : undefined;
+    if (Array.isArray(section?.accounts)) { merged.providers[provider] = { accounts: section.accounts }; continue; }
+    const accounts = config?.providers[provider]?.accounts || [];
+    if (!accounts.length) continue;
+    merged.providers[provider] = { accounts: accounts.map(a => ({ id: a.id, name: a.name, enabled: a.enabled,
+      status: 'network_error', code: 'network_error', source: 'unavailable', fetchedAt: null, checkedAt: now,
+      stale: true, windows: [] })) };
+  }
+  return sanitizeSnapshot(merged, now, USAGE_CACHE_TTL_MS);
+}
+
 export async function fetchUsageSnapshot({
   stateDir = STATE_DIR, refresh = false, fetchFn = globalThis.fetch,
   now = Date.now(), timeoutMs, allowProbe = false, endpoints,
+  remoteFn = readRemoteConfig, usageFn = remoteUsage,
 } = {}) {
+  let remote = null;
+  try { remote = remoteFn(stateDir); } catch { remote = null; }
+  if (remote) return remoteSnapshot(remote, { stateDir, refresh, fetchFn, now, timeoutMs, allowProbe, endpoints, usageFn });
   const key = resolve(stateDir);
   // Dashboard refreshes can overlap; share the same request within a process.
   const active = activeFetches.get(key);

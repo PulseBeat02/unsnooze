@@ -7,6 +7,7 @@ import {
   validMetadata, validatePolicy, validateCredentialReference,
 } from './config.js';
 import { PrivateStoreError, readPrivateJson, assertPrivateFile } from './store.js';
+import { readRemoteConfig, enableRemote, disableRemote, remoteJson, REMOTE_PROVIDERS } from './remote.js';
 
 class AccountCommandError extends Error {}
 const fail = message => { throw new AccountCommandError(message); };
@@ -16,10 +17,11 @@ unsnooze accounts import [claude|codex|agy|all] [--home <directory>] [--path <so
 unsnooze accounts enable|disable|switch|pin <provider> <id-or-name>
 unsnooze accounts unpin <provider>
 unsnooze accounts rename <provider> <id-or-name> <new-name>
-unsnooze accounts policy <provider> [<key> <value> | --threshold-percent <number> --on-limit <true|false> --strategy <headroom|priority|round-robin> --cooldown-ms <number> --never-switch <true|false>]`;
+unsnooze accounts policy <provider> [<key> <value> | --threshold-percent <number> --on-limit <true|false> --strategy <headroom|priority|round-robin> --cooldown-ms <number> --never-switch <true|false>]
+unsnooze accounts remote status | enable --socket <path> [--providers claude,codex] | disable`;
 
 const OPTIONS = new Set(['home', 'path', 'state-dir', 'name', 'id', 'type', 'record-id', 'priority',
-  'threshold-percent', 'on-limit', 'strategy', 'cooldown-ms', 'never-switch']);
+  'threshold-percent', 'on-limit', 'strategy', 'cooldown-ms', 'never-switch', 'socket', 'providers']);
 const FLAGS = new Set(['json', 'disabled', 'help']);
 const POLICY_OPTIONS = {
   'threshold-percent': 'thresholdPercent', 'on-limit': 'onLimit', strategy: 'strategy',
@@ -161,7 +163,10 @@ export async function cmdAccounts(args = []) {
     if (action === 'import') {
       allowOptions(options, ['home', 'path']);
       if (accountArg !== undefined || extra.length) fail('Too many account command arguments.');
-      const providers = !providerArg || providerArg === 'all' ? PROVIDERS : [providerName(providerArg)];
+      const remoteProviders = readRemoteConfig(stateDir)?.providers ?? [];
+      const all = !providerArg || providerArg === 'all';
+      if (!all && remoteProviders.includes(providerName(providerArg))) fail('This provider\'s accounts are held by the account host; import them there.');
+      const providers = (all ? PROVIDERS : [providerName(providerArg)]).filter(p => !remoteProviders.includes(p));
       if (options.path && providers.length > 1) fail('An explicit import path requires one provider.');
       const home = options.home ? resolve(options.home) : homedir();
       // Validate every source before changing the config. A malformed source
@@ -188,7 +193,40 @@ export async function cmdAccounts(args = []) {
       console.log(`Imported ${count} account reference${count === 1 ? '' : 's'}.`);
       return 0;
     }
+    if (action === 'remote') {
+      allowOptions(options, ['socket', 'providers', 'json']);
+      if (accountArg !== undefined || extra.length) fail('Too many account command arguments.');
+      const sub = providerArg ?? 'status';
+      if (sub === 'enable') {
+        if (!options.socket) fail('Remote mode needs --socket <path> of the account host.');
+        const providers = options.providers ? options.providers.split(',') : [...REMOTE_PROVIDERS];
+        let remote;
+        try { remote = await enableRemote(stateDir, { socket: resolve(options.socket), providers }); }
+        catch (err) { fail(err?.code === 'remote_unavailable' ? err.message : 'Remote mode could not be enabled.'); }
+        console.log(`Remote account mode on for ${remote.providers.join(', ')}; logins are held by the account host.`);
+        return 0;
+      }
+      if (sub === 'disable') {
+        const result = await disableRemote(stateDir);
+        console.log(result.restored ? 'Remote account mode off; local account references restored.'
+          : 'Remote account mode off; no saved local references were found.');
+        return 0;
+      }
+      if (sub !== 'status') fail('Use accounts remote status|enable|disable.');
+      const remote = readRemoteConfig(stateDir);
+      let health = null;
+      if (remote) { try { health = await remoteJson(remote, 'GET', '/health', undefined, { timeoutMs: 5_000 }); } catch { health = null; } }
+      const view = { remote: !!remote, providers: remote?.providers ?? [], socket: remote?.socket ?? null,
+        host: health ? { ok: health.ok === true, service: health.service, version: health.version ?? null } : null };
+      if (options.json) console.log(JSON.stringify(view));
+      else console.log(!remote ? 'Remote account mode is off.'
+        : `Remote account mode on for ${view.providers.join(', ')}; host ${health?.ok ? `healthy (${health.version ?? 'unknown version'})` : 'UNREACHABLE'}.`);
+      return remote && !health?.ok ? 1 : 0;
+    }
     const provider = providerName(providerArg);
+    if (readRemoteConfig(stateDir)?.providers.includes(provider)) {
+      fail('This provider\'s accounts are held by the account host; change them there.');
+    }
     if (action === 'add') {
       allowOptions(options, ['name', 'path', 'id', 'type', 'record-id', 'priority', 'disabled']);
       if (extra.length || (accountArg !== undefined && options.name)) fail('Too many account command arguments.');

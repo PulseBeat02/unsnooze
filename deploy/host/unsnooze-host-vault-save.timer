@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly backstop for unsnooze-host-vault save
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=300
+Persistent=yes
+
+[Install]
+WantedBy=timers.target

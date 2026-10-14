@@ -54,7 +54,7 @@ const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'confi
 // Every named subcommand; anything else (or no args) is an agent launch.
 const NAMED_COMMANDS = new Set([
   ...USER_FACING, 'setup', 'install', 'uninstall', 'update', 'daemon', 'accounts', '--version', '-V',
-  '_account-supervisor', '_account-worker',
+  '_account-supervisor', '_account-worker', '_host-router',
   '_hook-stopfailure', '_monitor', '_run', '_resumer', '_update-check', '_remote', '_askpass',
 ]);
 const isLaunchPath = cmd === '_run' || cmd === undefined || !NAMED_COMMANDS.has(cmd);
@@ -117,6 +117,10 @@ async function main() {
     case '_account-worker': {
       const { runAccountWorker } = await import('../src/accounts/daemon.js');
       return runAccountWorker();
+    }
+    case '_host-router': {
+      const { runHostRouter } = await import('../src/accounts/host.js');
+      return runHostRouter();
     }
     case 'status': {
       const { cmdStatus } = await import('../src/cli.js');

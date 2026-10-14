@@ -7,6 +7,7 @@ import { chooseAccount } from './select.js';
 import { fetchUsageSnapshot } from './usage.js';
 import { readPrivateJson, atomicPrivateJson, withStoreLock } from './store.js';
 import { scopeUsage } from './scope.js';
+import { remoteProvider, remoteSelect } from './remote.js';
 
 const empty = () => ({ version: 1, providers: {} });
 
@@ -30,8 +31,10 @@ export async function recordAccountFailure(provider, id, status, {
 export async function selectRoutingAccount(provider, {
   stateDir = STATE_DIR, reason = 'request', exclude = [], refresh = false,
   now, usageFn = fetchUsageSnapshot, minFetchedAt = 0,
-  model,
+  model, remoteFn = remoteProvider, remoteSelectFn = remoteSelect,
 } = {}) {
+  const remote = remoteFn(provider, stateDir);
+  if (remote) return selectRemoteAccount(provider, remote, { stateDir, reason, exclude, refresh, minFetchedAt, model, remoteSelectFn });
   const snapshot = await usageFn({ stateDir, refresh, allowProbe: provider === 'claude' });
   now ??= Date.now();
   return withStoreLock(join(stateDir, 'routing-state.json'), async () => {
@@ -82,4 +85,26 @@ export async function selectRoutingAccount(provider, {
     atomicPrivateJson(join(stateDir, 'routing-state.json'), state);
     return result;
   });
+}
+
+// The host decides with its own usage evidence and routing state. Callers get
+// the local mirror of the chosen account (metadata and a "remote" reference).
+// An unreachable host holds sessions exactly like an unverifiable quota.
+async function selectRemoteAccount(provider, remote, { stateDir, reason, exclude, refresh, minFetchedAt, model, remoteSelectFn }) {
+  let reply;
+  try { reply = await remoteSelectFn(remote, provider, { reason, exclude, refresh, minFetchedAt, model }); }
+  catch { return { account: null, reason: 'remote_unavailable', status: 'network_error', retryAt: Date.now() + 30_000 }; }
+  const chosen = reply.account && typeof reply.account.id === 'string' ? reply.account : null;
+  let account = null;
+  if (chosen) {
+    let local = null;
+    try { local = readAccounts(stateDir).providers[provider]?.accounts.find(a => a.id === chosen.id) ?? null; }
+    catch { /* a damaged mirror still routes by the host's answer */ }
+    account = local ?? { id: chosen.id, name: chosen.name, enabled: chosen.enabled !== false,
+      priority: Number.isSafeInteger(chosen.priority) ? chosen.priority : 0,
+      credential: { type: 'remote', path: remote.socket } };
+  }
+  return { account, reason: typeof reply.reason === 'string' ? reply.reason : undefined,
+    retryAt: Number.isFinite(reply.retryAt) ? reply.retryAt : null,
+    ...(typeof reply.status === 'string' ? { status: reply.status } : {}) };
 }

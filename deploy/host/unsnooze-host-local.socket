@@ -1,0 +1,14 @@
+# Host loopback listener for host root Claude (and `curl` checks). Not reachable from any container: the devbox and
+# the other containers have their own network namespaces. Requests need the router token
+# (/var/lib/unsnooze/router-token, root and unsnooze-host only).
+[Unit]
+Description=unsnooze account host socket on host loopback
+
+[Socket]
+ListenStream=127.0.0.1:18486
+FileDescriptorName=host
+Service=unsnooze-host.service
+NoDelay=yes
+
+[Install]
+WantedBy=sockets.target

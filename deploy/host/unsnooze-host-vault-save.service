@@ -1,0 +1,6 @@
+[Unit]
+Description=Re-encrypt changed unsnooze account host credentials
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/unsnooze-host/unsnooze-host-vault save

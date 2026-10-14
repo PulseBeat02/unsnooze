@@ -1,0 +1,16 @@
+# The devbox's only way to the account host. The directory is created by install.sh as uid 2000 (dev), mode 0700,
+# so only dev (and root) can reach the socket; the devbox sees it as /home/dev/.unsnooze-host/router.sock.
+# Requests on it need no token (trusted listener "devbox"); it carries routed /claude/ /codex/ traffic and the
+# read-only account API (usage, selection, public account list). No credential ever crosses it.
+[Unit]
+Description=unsnooze account host socket for the devbox
+
+[Socket]
+ListenStream=/srv/media-b/apps/devbox/home/.unsnooze-host/router.sock
+SocketMode=0666
+FileDescriptorName=devbox
+Service=unsnooze-host.service
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

@@ -7,7 +7,9 @@ export const DEFAULT_POLICY = Object.freeze({
   thresholdPercent: 95, onLimit: true, strategy: 'headroom', cooldownMs: 60_000, neverSwitch: false,
 });
 export const ACCOUNT_USAGE_MAX_AGE_MS = 60_000;
-const CREDENTIAL_TYPES = { claude: ['claude-token', 'managed'], codex: ['codex-multi-auth', 'managed'], agy: ['agy-token'] };
+// "remote" marks an account whose login is held by the account host (see
+// src/accounts/remote.js); its path is the host socket, never a credential.
+const CREDENTIAL_TYPES = { claude: ['claude-token', 'managed', 'remote'], codex: ['codex-multi-auth', 'managed', 'remote'], agy: ['agy-token'] };
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const onlyKeys = (v, keys) => object(v) && Object.keys(v).every(k => keys.includes(k));
 
@@ -49,7 +51,7 @@ export function validateCredentialReference(credential, provider, { checkFile = 
       || typeof credential.path !== 'string' || !isAbsolute(credential.path) || /[\0\r\n]/.test(credential.path)
       || (credential.type === 'codex-multi-auth' && !validMetadata(credential.recordId, { id: true }))
       || (credential.recordId !== undefined && credential.type !== 'codex-multi-auth')) throw new AccountConfigError();
-  if (checkFile) assertPrivateFile(credential.path);
+  if (checkFile && credential.type !== 'remote') assertPrivateFile(credential.path);
   return { type: credential.type, path: credential.path,
     ...(credential.recordId === undefined ? {} : { recordId: credential.recordId }) };
 }

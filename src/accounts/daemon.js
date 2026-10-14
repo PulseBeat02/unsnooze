@@ -374,7 +374,7 @@ export async function runAccountWorker({
   supervisorPid = Number(process.env.UNSNOOZE_ACCOUNT_SUPERVISOR_PID),
   heartbeatMs = Number(process.env.UNSNOOZE_ACCOUNT_HEARTBEAT_MS) || ACCOUNT_HEARTBEAT_MS,
   reconcileMs = Number(process.env.UNSNOOZE_ACCOUNT_RECONCILE_MS) || 30_000,
-  versionCheckMs = 15 * 60_000, signal, startProxy, startLegacy, reconcile, hasVersionSkew,
+  versionCheckMs = 15 * 60_000, signal, startProxy, startLegacy, reconcile, hasVersionSkew, syncRemote,
 } = {}) {
   stateDir = resolve(stateDir);
   port = configuredPort(port);
@@ -402,6 +402,7 @@ export async function runAccountWorker({
     if (!startProxy) ({ startAccountProxy: startProxy } = await import('./proxy.js'));
     if (!reconcile) ({ reconcileAccountSessions: reconcile } = await import('./reconcile.js'));
     if (!hasVersionSkew) ({ hasVersionSkew } = await import('../update-check.js'));
+    if (!syncRemote) ({ syncRemoteAccounts: syncRemote } = await import('./remote.js'));
     proxy = await startProxy({ stateDir, host: '127.0.0.1', port,
       health: () => ({ instanceId, workerId, supervisorPid, heartbeatAt: metadata.heartbeatAt }) });
     if (proxy.port !== port) throw new Error('Account router did not bind the configured port');
@@ -440,7 +441,10 @@ export async function runAccountWorker({
         } catch { onExit(); }
       }
       if (!reconciliation && Date.now() >= nextReconcileAt) {
-        reconciliation = Promise.resolve().then(() => reconcile({ stateDir }))
+        // Remote mode mirrors the host's account metadata first; a failed sync
+        // keeps the previous mirror and never blocks reconciliation.
+        reconciliation = Promise.resolve().then(() => syncRemote(stateDir)).catch(() => {})
+          .then(() => reconcile({ stateDir }))
           .catch(() => {}) // failed usage evidence never wakes a session
           .finally(() => { reconciliation = null; nextReconcileAt = Date.now() + reconcileMs; });
       }

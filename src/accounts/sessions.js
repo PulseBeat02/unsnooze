@@ -41,6 +41,15 @@ export async function claimSessionAccount(provider, accountId, headers, {
   });
 }
 
+// Remote mode: the account host refused a chained request. Record the same
+// pending resume the local router would have written for this launch.
+export async function recordResumeRequest(provider, headers, { stateDir = STATE_DIR, now = Date.now() } = {}) {
+  const { sessionId, launchId } = sessionIdentity(headers);
+  if (!launchId || !sessionId) return false;
+  atomicPrivateJson(resumeRequestPath(launchId, stateDir), { provider, sessionId, requestedAt: now, phase: 'pending' });
+  return true;
+}
+
 export function readResumeRequest(launchId, stateDir = STATE_DIR) {
   const request = readPrivateJson(resumeRequestPath(launchId, stateDir), null);
   if (!request) return null;

@@ -1,0 +1,61 @@
+# unsnooze account host: holds the Claude and Codex logins on the host, encrypted at rest (unsnooze-host-vault),
+# plaintext only in RAM (/run/unsnooze-host/credentials). The devbox reaches it through a Unix socket in its home
+# (unsnooze-host-devbox.socket, no token: the 0700 dev-owned directory is the access control); host root Claude
+# through 127.0.0.1:18486 with the router token in /var/lib/unsnooze/router-token. Design: docs/host-daemon.md.
+[Unit]
+Description=unsnooze account host (Claude/Codex logins; devbox and host Claude route through it)
+Requires=unsnooze-host-devbox.socket unsnooze-host-local.socket
+After=network-online.target unsnooze-host-devbox.socket unsnooze-host-local.socket
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unsnooze-host
+Group=unsnooze-host
+Sockets=unsnooze-host-devbox.socket unsnooze-host-local.socket
+Environment=UNSNOOZE_STATE_DIR=/var/lib/unsnooze HOME=/var/lib/unsnooze UNSNOOZE_UPDATE_CHECK=0
+Environment=UNSNOOZE_HOST_TRUSTED_LISTENERS=devbox NODE_OPTIONS=--max-old-space-size=256
+ExecStartPre=+/usr/local/lib/unsnooze-host/unsnooze-host-vault unlock
+ExecStart=/usr/local/bin/node /usr/local/lib/unsnooze-host/app/node_modules/unsnooze/bin/unsnooze.js _host-router
+ExecStopPost=+/usr/local/lib/unsnooze-host/unsnooze-host-vault save
+Restart=always
+RestartSec=2
+StateDirectory=unsnooze
+StateDirectoryMode=0700
+RuntimeDirectory=unsnooze-host
+RuntimeDirectoryMode=0700
+# A crash restart must keep the RAM copy: a Codex refresh may be newer than the vault.
+RuntimeDirectoryPreserve=yes
+UMask=0077
+MemoryMax=512M
+TasksMax=128
+CPUWeight=100
+IOWeight=50
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# Node's JIT needs writable+executable pages, so MemoryDenyWriteExecute stays off.
+MemoryDenyWriteExecute=no
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+RemoveIPC=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.20.1-pulse.6 — 2026-10-14
+
+- Add an account host (`unsnooze _host-router`) that holds the Claude and Codex
+  logins in a separate service, takes systemd socket activation, trusts a Unix
+  socket by its directory permissions and exposes a credential-free account API
+  (public account list, measured usage, selection).
+- Add remote account mode (`unsnooze accounts remote enable|disable|status`):
+  the local router keeps its port and token, forwards routed requests to the
+  account host and asks it for usage and selection. No provider credential is
+  read or stored locally; removing the remote file switches back at once.
+- Ship host deployment files (hardened systemd units, a systemd-creds vault,
+  install and import scripts) and the design in `docs/host-daemon.md`.
+
 ## 1.20.1-pulse.5 — 2026-10-12
 
 - Let authorized Claude header probes recover when the OAuth usage endpoint is

@@ -1,0 +1,11 @@
+# Re-encrypt a login as soon as unsnooze rewrites it (a Codex refresh rotates the refresh token: losing the new one
+# would mean a fresh login). The hourly timer and the service's ExecStopPost are the backstops.
+[Unit]
+Description=Watch the unsnooze account host's RAM credentials
+
+[Path]
+PathChanged=/run/unsnooze-host/credentials
+Unit=unsnooze-host-vault-save.service
+
+[Install]
+WantedBy=paths.target

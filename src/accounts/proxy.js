@@ -7,9 +7,11 @@ import { pipeline } from 'node:stream/promises';
 import { STATE_DIR } from '../config.js';
 import { selectRoutingAccount, recordAccountFailure } from './routing.js';
 import { routingCredential } from './refresh.js';
-import { recordUsageHeaders } from './usage.js';
-import { claimSessionAccount } from './sessions.js';
+import { recordUsageHeaders, fetchUsageSnapshot } from './usage.js';
+import { claimSessionAccount, recordResumeRequest } from './sessions.js';
 import { readPrivateText } from './store.js';
+import { readAccounts } from './config.js';
+import { readRemoteConfig, remoteRequest, publicAccounts } from './remote.js';
 
 const HOP_HEADERS = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
   'te', 'trailer', 'transfer-encoding', 'upgrade', 'host', 'content-length', 'cookie', 'set-cookie',
@@ -113,22 +115,119 @@ export function isQuotaRejection(provider, headers, body) {
   } catch { return false; }
 }
 
+function json(res, value) {
+  res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+  res.end(JSON.stringify(value));
+}
+
+const SELECT_REASONS = new Set(['request', 'limit', 'quota_exhausted']);
+const ACCOUNT_ID = /^[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,127}$/;
+
+// Account-host API (host mode only). It exposes decisions and measured usage,
+// never a credential, credential path or provider token.
+async function apiRoute(req, res, { stateDir, selectFn, usageSnapshotFn, readAccountsFn }) {
+  const url = new URL(req.url, 'http://localhost');
+  if (url.pathname === '/accounts/v1/accounts' && req.method === 'GET') {
+    json(res, publicAccounts(readAccountsFn(stateDir)));
+    return true;
+  }
+  if (url.pathname === '/accounts/v1/usage' && req.method === 'GET') {
+    json(res, await usageSnapshotFn({ stateDir, refresh: url.searchParams.get('refresh') === '1',
+      allowProbe: url.searchParams.get('probe') === '1' }));
+    return true;
+  }
+  if (url.pathname === '/accounts/v1/select' && req.method === 'POST') {
+    let input;
+    try { input = JSON.parse((await readBody(req, 64 * 1024)).toString('utf8')); } catch { input = null; }
+    const valid = input && typeof input === 'object' && ['claude', 'codex', 'agy'].includes(input.provider)
+      && SELECT_REASONS.has(input.reason ?? 'request')
+      && Array.isArray(input.exclude ?? []) && (input.exclude ?? []).length <= 32
+      && (input.exclude ?? []).every(id => typeof id === 'string' && ACCOUNT_ID.test(id))
+      && typeof (input.refresh ?? false) === 'boolean'
+      && Number.isFinite(input.minFetchedAt ?? 0) && (input.minFetchedAt ?? 0) >= 0
+      && (input.model === undefined || (typeof input.model === 'string' && input.model.length <= 200));
+    if (!valid) { reply(res, 400, 'invalid_request', 'Invalid account selection request.'); return true; }
+    const result = await selectFn(input.provider, { stateDir, reason: input.reason ?? 'request',
+      exclude: input.exclude ?? [], refresh: input.refresh ?? false, minFetchedAt: input.minFetchedAt ?? 0,
+      ...(input.model ? { model: input.model } : {}) });
+    const account = result.account;
+    json(res, { account: account ? { id: account.id, name: account.name, enabled: account.enabled !== false,
+      priority: account.priority ?? 0 } : null,
+    reason: result.reason ?? null, retryAt: result.retryAt ?? null, ...(result.status ? { status: result.status } : {}) });
+    return true;
+  }
+  return false;
+}
+
+// Remote mode: hand the request to the account host unchanged except that the
+// local capability is removed. The host strips the launch header upstream.
+const FORWARD_DROP = new Set([...HOP_HEADERS].filter(h => h !== 'x-unsnooze-launch'));
+
+async function forwardRemote(req, res, route, remote, { stateDir, maxBodyBytes, signal, requestFn }) {
+  const body = await readBody(req, maxBodyBytes);
+  const nominated = String(req.headers.connection || '').toLowerCase().split(',').map(x => x.trim());
+  const headers = {};
+  for (const [key, value] of Object.entries(req.headers)) {
+    const k = key.toLowerCase();
+    if (value == null || FORWARD_DROP.has(k) || nominated.includes(k)) continue;
+    headers[k] = Array.isArray(value) ? value.join(', ') : value;
+  }
+  const upstream = await requestFn(remote, { method: req.method, path: req.url, headers,
+    body: body.length ? body : undefined, signal, timeoutMs: 0 });
+  const out = {};
+  for (const [key, value] of Object.entries(upstream.headers)) {
+    if (!HOP_HEADERS.has(key) && key !== 'content-encoding') out[key] = value;
+  }
+  if (upstream.statusCode === 409) {
+    const chunks = [];
+    for await (const chunk of upstream) chunks.push(chunk);
+    const text = Buffer.concat(chunks).toString('utf8');
+    let code;
+    try { code = JSON.parse(text)?.error?.code; } catch { code = null; }
+    // The host saw a chained request for another account. Its resume request
+    // belongs to the launcher here, which restarts the same conversation.
+    if (code === 'session_resume_required') await recordResumeRequest(route.provider, req.headers, { stateDir });
+    res.writeHead(409, out);
+    res.end(text);
+    return;
+  }
+  res.writeHead(upstream.statusCode, out);
+  await pipeline(upstream, res);
+}
+
 // No request is replayed after upstream success/streaming starts. Retrying a
 // rejected request is safe; replaying a half-delivered model/tool call is not.
+//
+// listeners: [{ host, port } | { path } | { fd }, trusted?]. A trusted listener
+// is a Unix socket whose directory permissions are the access control (the
+// devbox link); it accepts requests without the router token. `api` enables
+// the account-host routes; `remoteFn` makes this a forwarder in remote mode.
 export async function startAccountProxy({ stateDir = STATE_DIR, host = '127.0.0.1', port = 18484,
+  listeners = null, api = false,
   health = () => ({}), fetchFn = fetch, selectFn = selectRoutingAccount,
   credentialFn = routingCredential, failureFn = recordAccountFailure,
-  usageHeadersFn = recordUsageHeaders,
+  usageHeadersFn = recordUsageHeaders, usageSnapshotFn = fetchUsageSnapshot, readAccountsFn = readAccounts,
+  remoteFn = readRemoteConfig, remoteRequestFn = remoteRequest,
   upstreams = { claude: 'https://api.anthropic.com', codex: 'https://chatgpt.com/backend-api' },
   maxBodyBytes = 32 * 1024 * 1024, requestTimeoutMs = 15 * 60 * 1000,
 } = {}) {
-  if (host !== '127.0.0.1') throw new Error('Account router only binds loopback.');
+  listeners ??= [{ host, port }];
+  if (!listeners.length || listeners.some(l => l.host !== undefined && l.host !== '127.0.0.1')) {
+    throw new Error('Account router only binds loopback.');
+  }
+  if (api && remoteFn(stateDir)) throw new Error('An account host cannot itself forward to a remote host.');
   const token = routerToken(stateDir);
-  const server = http.createServer(async (req, res) => {
-    if (!authorized(req, token)) return reply(res, 401, 'authentication_error', 'Router authentication required.');
+  const handle = async (req, res, trusted) => {
+    if (!trusted && !authorized(req, token)) return reply(res, 401, 'authentication_error', 'Router authentication required.');
     if (req.url === '/health' && req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       return res.end(JSON.stringify({ ok: true, service: 'unsnooze-accounts', pid: process.pid, ...health() }));
+    }
+    if (api && req.url.startsWith('/accounts/v1/')) {
+      try {
+        if (await apiRoute(req, res, { stateDir, selectFn, usageSnapshotFn, readAccountsFn })) return;
+      } catch { return reply(res, 500, 'router_error', 'Account host request failed.'); }
+      return reply(res, 404, 'not_found', 'Unsupported account route.');
     }
     const route = upstreamRoute(req.url);
     if (!route || !['GET', 'POST', 'PUT', 'DELETE'].includes(req.method)) {
@@ -139,6 +238,17 @@ export async function startAccountProxy({ stateDir = STATE_DIR, host = '127.0.0.
     timeout.unref();
     res.on('close', () => { if (!res.writableFinished) controller.abort(); });
     try {
+      let remote;
+      try { remote = remoteFn(stateDir); } catch { return reply(res, 502, 'router_error', 'Remote account configuration is invalid.'); }
+      if (remote?.providers.includes(route.provider)) {
+        try {
+          return await forwardRemote(req, res, route, remote, { stateDir, maxBodyBytes,
+            signal: controller.signal, requestFn: remoteRequestFn });
+        } catch (error) {
+          return reply(res, error.code === 'body_size' ? 413 : 502, 'router_error',
+            error.code === 'body_size' ? 'Request exceeds router size limit.' : 'Account host unavailable.');
+        }
+      }
       const body = await readBody(req, maxBodyBytes);
       let payload;
       try { payload = JSON.parse(body.toString('utf8')); } catch { /* binary image body or GET */ }
@@ -216,11 +326,26 @@ export async function startAccountProxy({ stateDir = STATE_DIR, host = '127.0.0.
       reply(res, error.code === 'body_size' ? 413 : 502, 'router_error',
         error.code === 'body_size' ? 'Request exceeds router size limit.' : 'Provider connection unavailable.');
     } finally { clearTimeout(timeout); }
-  });
-  server.requestTimeout = 60000;
-  server.headersTimeout = 15000;
-  server.on('upgrade', (_req, socket) => { socket.end('HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\n\r\n'); });
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve); });
-  return { server, port: server.address().port,
-    close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }) };
+  };
+  const servers = [];
+  try {
+    for (const listener of listeners) {
+      const server = http.createServer((req, res) => handle(req, res, listener.trusted === true));
+      server.requestTimeout = 60000;
+      server.headersTimeout = 15000;
+      server.on('upgrade', (_req, socket) => { socket.end('HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\n\r\n'); });
+      const target = listener.fd !== undefined ? { fd: listener.fd }
+        : listener.path !== undefined ? { path: listener.path } : { port: listener.port, host: '127.0.0.1' };
+      await new Promise((resolve, reject) => { server.once('error', reject); server.listen(target, resolve); });
+      servers.push(server);
+    }
+  } catch (error) {
+    for (const server of servers) server.close();
+    throw error;
+  }
+  const tcp = servers.map(s => s.address()).find(a => a && typeof a === 'object');
+  return { server: servers[0], servers, port: tcp?.port,
+    close: () => Promise.all(servers.map(server => new Promise(resolve => {
+      server.close(resolve); server.closeAllConnections();
+    }))) };
 }

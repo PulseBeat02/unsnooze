@@ -63,6 +63,8 @@ function normalize(data) {
 export function readCredential(account) {
   const ref = account?.credential;
   if (!record(ref) || typeof ref.path !== 'string' || !ref.path) throw new CredentialError();
+  // The account host holds this login; nothing local may read it.
+  if (ref.type === 'remote') throw new CredentialError('credential_unavailable');
   let raw;
   try {
     raw = readPrivateText(ref.path);
