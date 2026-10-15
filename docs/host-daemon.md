@@ -38,7 +38,7 @@ claude / codex / Paseo / lab relay                   unsnooze-host.service  (use
    |  asks host for usage + selection                         <- /var/lib/unsnooze-vault/*.cred
    v                                                          (systemd-creds, host key)
 ~/.unsnooze-host/router.sock  ==== Unix socket =====> listener "devbox" (trusted: dir is uid 2000, 0700)
-monitor / mux / resumer / reconcile stay here          listener "host" 127.0.0.1:18486 (router token)
+monitor / mux / resumer / reconcile stay here          listener "host" 127.0.0.1:18487 (router token)
                                                           ^
                                                      host root Claude (claude-host-env.sh)
 ```
@@ -100,7 +100,7 @@ monitor / mux / resumer / reconcile stay here          listener "host" 127.0.0.1
 
 ### Host root Claude
 
-Source `deploy/host/claude-host-env.sh` from the host's claude launcher: `ANTHROPIC_BASE_URL=http://127.0.0.1:18486/claude`,
+Source `deploy/host/claude-host-env.sh` from the host's claude launcher: `ANTHROPIC_BASE_URL=http://127.0.0.1:18487/claude`,
 `CLAUDE_CODE_OAUTH_TOKEN=$(cat /var/lib/unsnooze/router-token)`. Then `/root/.claude/.credentials.json` can go
 into the vault (or be deleted). Test in a separate shell first: claude.ai-backed features (connectors such as
 Claude Docs, usage display) need the claude.ai login and may not work on a router token.
@@ -111,7 +111,7 @@ Claude Docs, usage display) need the claude.ai login and may not work on a route
 |---|---|
 | `unsnooze-host.service` | the service: user `unsnooze-host`, `ProtectSystem=strict`, `ProtectHome`, no capabilities, `@system-service` syscalls, 512 MB. `MemoryDenyWriteExecute` stays off (Node JIT) |
 | `unsnooze-host-devbox.socket` | `/srv/media-b/apps/devbox/home/.unsnooze-host/router.sock`, name `devbox` |
-| `unsnooze-host-local.socket` | `127.0.0.1:18486`, name `host` |
+| `unsnooze-host-local.socket` | `127.0.0.1:18487`, name `host` (18486 is taken by agentmemory-root-gemini on this host) |
 | `unsnooze-host-vault` | unlock / save / import / export / status (never prints contents) |
 | `unsnooze-host-vault-save.{path,service,timer}` | save on change, hourly backstop |
 | `sysusers-unsnooze-host.conf` | the system user |
@@ -133,7 +133,7 @@ Claude Docs, usage display) need the claude.ai login and may not work on a route
    `systemctl enable --now unsnooze-host-devbox.socket unsnooze-host-local.socket unsnooze-host-vault-save.path unsnooze-host-vault-save.timer`
    then check: `curl -s --unix-socket /srv/media-b/apps/devbox/home/.unsnooze-host/router.sock http://x/health`,
    `.../accounts/v1/usage?refresh=1` (both accounts `ok`), and one real request with the host token:
-   `curl -s -H "authorization: Bearer $(cat /var/lib/unsnooze/router-token)" http://127.0.0.1:18486/claude/v1/models`.
+   `curl -s -H "authorization: Bearer $(cat /var/lib/unsnooze/router-token)" http://127.0.0.1:18487/claude/v1/models`.
 5. **Switch the devbox** (hot, no restart, sessions keep their env):
    `docker exec devbox su - dev -c 'unsnooze accounts remote enable --socket ~/.unsnooze-host/router.sock && unsnooze accounts remote status'`.
    The next request of every live session goes through the host.

@@ -6,7 +6,7 @@
 # the devbox socket directory (uid 2000, 0700) and the units in /etc/systemd/system (daemon-reload only).
 # Cutover steps: docs/host-daemon.md.
 set -euo pipefail
-SRC=${1:-/srv/media-b/apps/devbox/home/projects/WebstormProjects/unsnooze-host-daemon}
+SRC=${1:-/srv/media-b/apps/devbox/home/projects/WebstormProjects/unsnooze}
 HERE=$SRC/deploy/host
 PREFIX=/usr/local/lib/unsnooze-host
 NODE=/usr/local/bin/node
@@ -18,7 +18,7 @@ for f in unsnooze-host.service unsnooze-host-devbox.socket unsnooze-host-local.s
   [ -f "$HERE/$f" ] || { echo "missing $HERE/$f" >&2; exit 1; }
 done
 
-install -m 644 "$HERE/sysusers-unsnooze-host.conf" /etc/sysusers.d/unsnooze-host.conf
+install -D -m 644 "$HERE/sysusers-unsnooze-host.conf" /etc/sysusers.d/unsnooze-host.conf
 systemd-sysusers /etc/sysusers.d/unsnooze-host.conf
 
 work=$(mktemp -d)

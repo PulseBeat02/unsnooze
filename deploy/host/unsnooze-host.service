@@ -1,7 +1,7 @@
 # unsnooze account host: holds the Claude and Codex logins on the host, encrypted at rest (unsnooze-host-vault),
 # plaintext only in RAM (/run/unsnooze-host/credentials). The devbox reaches it through a Unix socket in its home
 # (unsnooze-host-devbox.socket, no token: the 0700 dev-owned directory is the access control); host root Claude
-# through 127.0.0.1:18486 with the router token in /var/lib/unsnooze/router-token. Design: docs/host-daemon.md.
+# through 127.0.0.1:18487 with the router token in /var/lib/unsnooze/router-token. Design: docs/host-daemon.md.
 [Unit]
 Description=unsnooze account host (Claude/Codex logins; devbox and host Claude route through it)
 Requires=unsnooze-host-devbox.socket unsnooze-host-local.socket

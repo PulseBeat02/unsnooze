@@ -5,7 +5,7 @@
 Description=unsnooze account host socket on host loopback
 
 [Socket]
-ListenStream=127.0.0.1:18486
+ListenStream=127.0.0.1:18487
 FileDescriptorName=host
 Service=unsnooze-host.service
 NoDelay=yes
