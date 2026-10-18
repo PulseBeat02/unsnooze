@@ -9,7 +9,7 @@
 #  - affinity/: session-to-account claims, so chained Codex requests keep their account after the switch.
 # Prints names and hours only, never credential contents.
 set -euo pipefail
-DEVHOME=/srv/media-b/apps/devbox/home
+DEVHOME=/srv/data/apps/devbox/home
 SRC=$DEVHOME/.unsnooze
 STATE=/var/lib/unsnooze
 VAULT_CMD=/usr/local/lib/unsnooze-host/unsnooze-host-vault

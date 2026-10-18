@@ -6,7 +6,7 @@
 # the devbox socket directory (uid 2000, 0700) and the units in /etc/systemd/system (daemon-reload only).
 # Cutover steps: docs/host-daemon.md.
 set -euo pipefail
-SRC=${1:-/srv/media-b/apps/devbox/home/projects/WebstormProjects/unsnooze}
+SRC=${1:-/srv/data/apps/devbox/home/projects/WebstormProjects/unsnooze}
 HERE=$SRC/deploy/host
 PREFIX=/usr/local/lib/unsnooze-host
 NODE=/usr/local/bin/node
@@ -34,7 +34,7 @@ mv -T "$PREFIX/app.new" "$PREFIX/app"
 install -m 755 "$HERE/unsnooze-host-vault" "$PREFIX/unsnooze-host-vault"
 
 install -d -m 700 /var/lib/unsnooze-vault
-install -d -o 2000 -g 2000 -m 700 /srv/media-b/apps/devbox/home/.unsnooze-host
+install -d -o 2000 -g 2000 -m 700 /srv/data/apps/devbox/home/.unsnooze-host
 
 for u in unsnooze-host.service unsnooze-host-devbox.socket unsnooze-host-local.socket \
          unsnooze-host-vault-save.path unsnooze-host-vault-save.service unsnooze-host-vault-save.timer; do

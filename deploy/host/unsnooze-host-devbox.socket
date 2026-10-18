@@ -6,7 +6,7 @@
 Description=unsnooze account host socket for the devbox
 
 [Socket]
-ListenStream=/srv/media-b/apps/devbox/home/.unsnooze-host/router.sock
+ListenStream=/srv/data/apps/devbox/home/.unsnooze-host/router.sock
 SocketMode=0666
 FileDescriptorName=devbox
 Service=unsnooze-host.service

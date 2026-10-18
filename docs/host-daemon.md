@@ -110,7 +110,7 @@ Claude Docs, usage display) need the claude.ai login and may not work on a route
 | File | Purpose |
 |---|---|
 | `unsnooze-host.service` | the service: user `unsnooze-host`, `ProtectSystem=strict`, `ProtectHome`, no capabilities, `@system-service` syscalls, 512 MB. `MemoryDenyWriteExecute` stays off (Node JIT) |
-| `unsnooze-host-devbox.socket` | `/srv/media-b/apps/devbox/home/.unsnooze-host/router.sock`, name `devbox` |
+| `unsnooze-host-devbox.socket` | `/srv/data/apps/devbox/home/.unsnooze-host/router.sock`, name `devbox` |
 | `unsnooze-host-local.socket` | `127.0.0.1:18487`, name `host` (18486 is taken by agentmemory-root-gemini on this host) |
 | `unsnooze-host-vault` | unlock / save / import / export / status (never prints contents) |
 | `unsnooze-host-vault-save.{path,service,timer}` | save on change, hourly backstop |
@@ -131,7 +131,7 @@ Claude Docs, usage display) need the claude.ai login and may not work on a route
    Codex access token has < 24 h left, so neither side refreshes during the switch.
 4. **Start the host** (no effect on the devbox yet):
    `systemctl enable --now unsnooze-host-devbox.socket unsnooze-host-local.socket unsnooze-host-vault-save.path unsnooze-host-vault-save.timer`
-   then check: `curl -s --unix-socket /srv/media-b/apps/devbox/home/.unsnooze-host/router.sock http://x/health`,
+   then check: `curl -s --unix-socket /srv/data/apps/devbox/home/.unsnooze-host/router.sock http://x/health`,
    `.../accounts/v1/usage?refresh=1` (both accounts `ok`), and one real request with the host token:
    `curl -s -H "authorization: Bearer $(cat /var/lib/unsnooze/router-token)" http://127.0.0.1:18487/claude/v1/models`.
 5. **Switch the devbox** (hot, no restart, sessions keep their env):
@@ -152,7 +152,7 @@ Claude Docs, usage display) need the claude.ai login and may not work on a route
 - Before step 7: `unsnooze accounts remote disable` in the devbox restores the local references; routing is
   local on the next request. Stop the host service afterwards so only one side holds the Codex login.
 - After step 7: first `systemctl stop unsnooze-host.service` (stops host refreshes), then
-  `unsnooze-host-vault export <name> /srv/media-b/apps/devbox/home/.unsnooze/credentials/<name>` and
+  `unsnooze-host-vault export <name> /srv/data/apps/devbox/home/.unsnooze/credentials/<name>` and
   `chown 2000:2000` for the Claude and Codex files, then `unsnooze accounts remote disable`.
 - Copy `/var/lib/unsnooze/affinity/*.json` back to the devbox if chained Codex sessions must keep their account.
 
