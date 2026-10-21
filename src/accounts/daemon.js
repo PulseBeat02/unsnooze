@@ -10,7 +10,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { STATE_DIR } from '../config.js';
 import { standaloneEnv } from '../spawn.js';
-import { atomicPrivateJson, readPrivateJson, readPrivateText, withStoreLock } from './store.js';
+import { PrivateStoreError, atomicPrivateJson, readPrivateJson, readPrivateText, withStoreLock } from './store.js';
 
 export const ACCOUNT_DAEMON_PORT = 18484;
 export const ACCOUNT_HEARTBEAT_MS = 1_000;
@@ -259,6 +259,12 @@ async function pause(ms, signal) {
   });
 }
 
+// A slow disk can keep the control lock past its timeout: that costs one tick, never the daemon.
+async function heartbeatLock(file, fn) {
+  try { await withStoreLock(file, fn); return true; }
+  catch (err) { if (err instanceof PrivateStoreError && err.code === 'LOCK_TIMEOUT') return false; throw err; }
+}
+
 async function terminateChild(child, timeoutMs = 1_500) {
   if (!child || child.exitCode !== null || child.signalCode !== null || !validPid(child.pid)) return;
   // IPC requests allow graceful shutdown on Windows, where SIGTERM is forced.
@@ -305,13 +311,14 @@ export async function runAccountSupervisor({
   try {
     while (!controller.signal.aborted) {
       let retained = false;
-      await withStoreLock(files.control, async () => {
+      const locked = await heartbeatLock(files.control, async () => {
         if (!sameOwner(readDaemonJson(files.supervisor), self)) return;
         if (readDaemonJson(files.stop)?.instanceId === instanceId) return;
         self.heartbeatAt = Date.now();
         atomicPrivateJson(files.supervisor, self);
         retained = true;
       });
+      if (!locked) { await pause(heartbeatMs, controller.signal); continue; }
       if (!retained) break;
       if (exited && Date.now() >= nextStartAt) {
         const workerId = randomUUID();
@@ -408,7 +415,7 @@ export async function runAccountWorker({
     if (proxy.port !== port) throw new Error('Account router did not bind the configured port');
     while (!controller.signal.aborted) {
       let retained = false;
-      await withStoreLock(files.control, async () => {
+      const locked = await heartbeatLock(files.control, async () => {
         const current = readDaemonJson(files.supervisor);
         if (!sameOwner(current, owner) || !ownedProcess(current)
           || readDaemonJson(files.stop)?.instanceId === instanceId) return;
@@ -416,6 +423,7 @@ export async function runAccountWorker({
         atomicPrivateJson(files.metadata, metadata);
         retained = true;
       });
+      if (!locked) { await pause(heartbeatMs, controller.signal); continue; }
       if (!retained) break;
       if (Date.now() >= nextVersionCheckAt) {
         if (hasVersionSkew()) break;

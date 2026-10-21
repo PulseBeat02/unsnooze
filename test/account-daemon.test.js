@@ -11,6 +11,7 @@ import {
   ensureAccountDaemon, stopAccountDaemon, accountDaemonStatus, accountProcessBirth,
   requestAccountHealth, cmdAccountDaemon,
 } from '../src/accounts/daemon.js';
+import { withStoreLock } from '../src/accounts/store.js';
 
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-account-daemon-'));
 const FIXTURE = join(DIR, 'fixture.mjs');
@@ -192,6 +193,26 @@ test('supervisor replaces a killed worker at the same port and worker restarts i
   assert.equal(second.metadata.instanceId, first.metadata.instanceId);
   assert.notEqual(second.metadata.workerId, first.metadata.workerId);
   assert.equal(readFileSync(join(stateDir, 'router-token'), 'utf8'), 'test-local-token');
+});
+
+test('a control lock held past its timeout costs heartbeats, never the daemon', async t => {
+  const stateDir = join(DIR, 'busy-lock');
+  const port = await freePort();
+  const options = { stateDir, port, readAccounts: configured, spawnSupervisor: fixtureSpawner({ value: 0 }) };
+  t.after(() => stopAccountDaemon({ stateDir }));
+  const first = await ensureAccountDaemon(options);
+  // Longer than the 10 s lock timeout: both heartbeat loops time out meanwhile.
+  const released = await withStoreLock(join(stateDir, 'account-daemon-control'), async () => {
+    await sleep(12_000);
+    return Date.now();
+  });
+  const resumed = await until(async () => {
+    const status = await accountDaemonStatus({ stateDir });
+    return status.healthy && status.metadata.heartbeatAt > released
+      && status.supervisor.heartbeatAt > released && status;
+  });
+  assert.equal(resumed.pid, first.pid);
+  assert.equal(resumed.supervisorPid, first.supervisorPid);
 });
 
 test('daemon killed after a quota switch commit recovers the chosen account and exact conversation', async t => {

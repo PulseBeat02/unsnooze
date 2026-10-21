@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.20.1-pulse.7 — 2026-10-21
+
+- Keep the account supervisor and worker running when a slow disk holds the
+  store lock past its timeout: that heartbeat is skipped and retried on the
+  next tick instead of ending the daemon and its router.
+
 ## 1.20.1-pulse.6 — 2026-10-14
 
 - Add an account host (`unsnooze _host-router`) that holds the Claude and Codex
